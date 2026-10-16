@@ -49,6 +49,8 @@ export default function App() {
   const [editingEntryId, setEditingEntryId] = useState(null)
   const [entryForm, setEntryForm] = useState(initialEntry)
   const [cardModal, setCardModal] = useState(false)
+  const [invoiceConfirm, setInvoiceConfirm] = useState(null)
+  const [confirmation, setConfirmation] = useState(null)
   const [editingCardId, setEditingCardId] = useState(null)
   const [cardForm, setCardForm] = useState({ name: '', closing_day: 10, due_day: 17, credit_limit: '' })
   const [potModal, setPotModal] = useState(false)
@@ -89,6 +91,17 @@ export default function App() {
     ])
     if (cardResult.error || entryResult.error || potResult.error || movementResult.error || budgetResult.error || recurringResult.error || categoryResult.error || reminderResult.error) setMessage(cardResult.error?.message || entryResult.error?.message || potResult.error?.message || movementResult.error?.message || budgetResult.error?.message || recurringResult.error?.message || categoryResult.error?.message || reminderResult.error?.message || recurrenceError.message)
     else { setCards(cardResult.data || []); setEntries(entryResult.data || []); setPots(potResult.data || []); setMovements(movementResult.data || []); setBudgets(budgetResult.data || []); setRecurringRules(recurringResult.data || []); setUserCategories(categoryResult.data || []); setReminderSettings(reminderResult.data || { enabled: false, days_before: 1 }) }
+  }
+
+  function requestConfirmation({ title, message, details, confirmLabel = 'Excluir', onConfirm }) {
+    setConfirmation({ title, message, details, confirmLabel, onConfirm })
+  }
+
+  async function runConfirmation() {
+    if (!confirmation) return
+    const action = confirmation.onConfirm
+    setConfirmation(null)
+    await action?.()
   }
 
   async function handleAuth(event) {
@@ -144,14 +157,18 @@ export default function App() {
     else { setEntryModal(false); setEditingEntryId(null); await loadData() }
   }
 
-  async function toggleInvoicePaid(card) {
+  function toggleInvoicePaid(card) {
     const invoiceEntries = entries.filter((item) => item.kind === 'expense' && item.card_id === card.id && item.invoice_month?.startsWith(selectedMonth))
     if (!invoiceEntries.length) return
-    const reopening = card.invoicePaid
-    const label = `${card.name} · ${monthName(selectedMonth)}`
-    if (!window.confirm(reopening ? `Reabrir a fatura ${label}? As compras voltarão a ficar pendentes.` : `Marcar a fatura ${label} como paga? Todas as compras desta fatura serão marcadas como pagas.`)) return
+    setInvoiceConfirm({ card, entries: invoiceEntries, reopening: card.invoicePaid })
+  }
+
+  async function confirmInvoiceChange() {
+    if (!invoiceConfirm) return
+    const { card, entries: invoiceEntries, reopening } = invoiceConfirm
     const ids = invoiceEntries.map((item) => item.id)
     const { error } = await supabase.from('expenses').update(reopening ? { status: 'pending', settled_on: null } : { status: 'settled', settled_on: localDate() }).in('id', ids)
+    setInvoiceConfirm(null)
     if (error) setMessage(error.message); else await loadData()
   }
 
@@ -160,11 +177,19 @@ export default function App() {
     if (error) setMessage(error.message); else loadData()
   }
 
-  async function deleteEntry(item) {
-    if (!window.confirm(item.installment_group_id ? `Excluir todas as ${item.installment_count} parcelas de “${item.description}”?` : `Excluir “${item.description}”?`)) return
-    const query = supabase.from('expenses').delete()
-    const { error } = item.installment_group_id ? await query.eq('installment_group_id', item.installment_group_id) : await query.eq('id', item.id)
-    if (error) setMessage(error.message); else loadData()
+  function deleteEntry(item) {
+    const isInstallmentGroup = Boolean(item.installment_group_id)
+    requestConfirmation({
+      title: isInstallmentGroup ? 'Excluir todas as parcelas?' : 'Excluir lançamento?',
+      message: isInstallmentGroup ? `Você está prestes a excluir todas as ${item.installment_count} parcelas de “${item.description}”.` : `Você está prestes a excluir “${item.description}”.`,
+      details: isInstallmentGroup ? 'Essa ação remove todas as parcelas vinculadas à compra.' : 'Essa ação não pode ser desfeita.',
+      confirmLabel: isInstallmentGroup ? 'Excluir parcelas' : 'Excluir lançamento',
+      onConfirm: async () => {
+        const query = supabase.from('expenses').delete()
+        const { error } = isInstallmentGroup ? await query.eq('installment_group_id', item.installment_group_id) : await query.eq('id', item.id)
+        if (error) setMessage(error.message); else await loadData()
+      },
+    })
   }
 
   function openNewCard() { setEditingCardId(null); setCardForm({ name: '', closing_day: 10, due_day: 17, credit_limit: '' }); setCardModal(true) }
@@ -178,10 +203,11 @@ export default function App() {
     if (result.error) setMessage(result.error.message)
     else { setCardModal(false); setEditingCardId(null); await loadData() }
   }
-  async function deleteCard(item) {
-    if (!window.confirm(`Excluir o cartão “${item.name}”? Os lançamentos associados continuarão salvos sem cartão.`)) return
-    const { error } = await supabase.from('cards').delete().eq('id', item.id)
-    if (error) setMessage(error.message); else loadData()
+  function deleteCard(item) {
+    requestConfirmation({ title: 'Excluir cartão?', message: `Excluir o cartão “${item.name}”?`, details: 'Os lançamentos associados serão mantidos, mas ficarão sem cartão vinculado.', confirmLabel: 'Excluir cartão', onConfirm: async () => {
+      const { error } = await supabase.from('cards').delete().eq('id', item.id)
+      if (error) setMessage(error.message); else await loadData()
+    } })
   }
 
   function openNewPot() { setEditingPotId(null); setPotForm({ name: '', goal_amount: '', goal_due_date: '', opening_balance: '0' }); setPotModal(true) }
@@ -204,15 +230,17 @@ export default function App() {
     const { error } = await supabase.from('savings_movements').insert({ ...movementForm, amount, note: movementForm.note.trim() || null })
     if (error) setMessage(error.message); else { setMovementModal(false); await loadData() }
   }
-  async function deleteMovement(item) {
-    if (!window.confirm('Excluir esta movimentação do cofrinho?')) return
-    const { error } = await supabase.from('savings_movements').delete().eq('id', item.id)
-    if (error) setMessage(error.message); else await loadData()
+  function deleteMovement(item) {
+    requestConfirmation({ title: 'Excluir movimentação?', message: 'Excluir esta movimentação do cofrinho?', details: 'O saldo do cofrinho será recalculado sem este registro.', confirmLabel: 'Excluir movimentação', onConfirm: async () => {
+      const { error } = await supabase.from('savings_movements').delete().eq('id', item.id)
+      if (error) setMessage(error.message); else await loadData()
+    } })
   }
-  async function deletePot(item) {
-    if (!window.confirm(`Excluir o cofrinho “${item.name}” e suas movimentações?`)) return
-    const { error } = await supabase.from('savings_pots').delete().eq('id', item.id)
-    if (error) setMessage(error.message); else await loadData()
+  function deletePot(item) {
+    requestConfirmation({ title: 'Excluir cofrinho?', message: `Excluir o cofrinho “${item.name}” e suas movimentações?`, details: 'O saldo e o histórico deste cofrinho serão removidos.', confirmLabel: 'Excluir cofrinho', onConfirm: async () => {
+      const { error } = await supabase.from('savings_pots').delete().eq('id', item.id)
+      if (error) setMessage(error.message); else await loadData()
+    } })
   }
 
   async function saveBudget(event) {
@@ -220,9 +248,11 @@ export default function App() {
     const result = await supabase.from('category_budgets').upsert({ month: monthStart(selectedMonth), category: budgetForm.category, amount: Number(budgetForm.amount) }, { onConflict: 'user_id,month,category' })
     if (result.error) setMessage(result.error.message); else { setBudgetModal(false); await loadData() }
   }
-  async function deleteBudget(item) {
-    const { error } = await supabase.from('category_budgets').delete().eq('id', item.id)
-    if (error) setMessage(error.message); else await loadData()
+  function deleteBudget(item) {
+    requestConfirmation({ title: 'Remover limite?', message: `Remover o limite de ${item.category} deste mês?`, details: 'Isso remove apenas o limite planejado; os lançamentos continuam salvos.', confirmLabel: 'Remover limite', onConfirm: async () => {
+      const { error } = await supabase.from('category_budgets').delete().eq('id', item.id)
+      if (error) setMessage(error.message); else await loadData()
+    } })
   }
   function openNewRecurring() {
     setRecurringForm({ kind: 'expense', description: '', amount: '', category: 'Moradia', day_of_month: '1', payment_method: 'pix', card_id: '', starts_on: monthStart(selectedMonth), ends_on: '' })
@@ -238,10 +268,11 @@ export default function App() {
     const { error } = await supabase.from('recurring_rules').update({ active: !rule.active }).eq('id', rule.id)
     if (error) setMessage(error.message); else await loadData()
   }
-  async function deleteRecurring(rule) {
-    if (!window.confirm(`Excluir a regra “${rule.description}”? Os lançamentos já criados serão mantidos.`)) return
-    const { error } = await supabase.from('recurring_rules').delete().eq('id', rule.id)
-    if (error) setMessage(error.message); else await loadData()
+  function deleteRecurring(rule) {
+    requestConfirmation({ title: 'Excluir recorrência?', message: `Excluir a regra “${rule.description}”?`, details: 'Os lançamentos que já foram criados por essa regra serão mantidos.', confirmLabel: 'Excluir recorrência', onConfirm: async () => {
+      const { error } = await supabase.from('recurring_rules').delete().eq('id', rule.id)
+      if (error) setMessage(error.message); else await loadData()
+    } })
   }
 
   const allExpenseCategories = [...expenseCategories, ...userCategories.filter((item) => item.kind === 'expense').map((item) => item.name)]
@@ -391,7 +422,7 @@ export default function App() {
         {potBalances.length ? <section className="savings-pot-grid">{potBalances.map((pot) => { const progress = pot.goal_amount ? Math.min(100, pot.balance / Number(pot.goal_amount) * 100) : null; return <article className="panel savings-pot" key={pot.id}><div className="pot-title"><span className="pot-icon"><PiggyBank size={19}/></span><div><h2>{pot.name}</h2><span>{pot.goal_amount ? `Meta: ${brl(pot.goal_amount)}` : 'Sem meta definida'}</span></div><div className="row-actions"><button className="icon-button" title="Editar cofrinho" onClick={() => openEditPot(pot)}><Pencil size={15}/></button><button className="icon-button danger" title="Excluir cofrinho" onClick={() => deletePot(pot)}><Trash2 size={15}/></button></div></div><strong className="pot-balance">{brl(pot.balance)}</strong>{pot.goal_due_date && pot.goal_amount && <div className="goal-suggestion">{(() => { const remaining=Math.max(0,Number(pot.goal_amount)-pot.balance); const today=new Date(); const due=new Date(`${pot.goal_due_date}T12:00:00`); const months=Math.max(1,(due.getFullYear()-today.getFullYear())*12+due.getMonth()-today.getMonth()+1); return remaining===0?'Meta alcançada!':`Para chegar até ${fmtDate(pot.goal_due_date)}, guarde cerca de ${brl(remaining/months)} por mês.` })()}</div>}{progress !== null && <div className="pot-progress"><div><span>Progresso da meta</span><b>{Math.round(progress)}%</b></div><i><span style={{width:`${progress}%`}}/></i></div>}<div className="pot-actions"><button className="button subtle" onClick={() => openMovement(pot, 'deposit')}><ArrowDownLeft size={15}/> Guardar</button><button className="button subtle" onClick={() => openMovement(pot, 'withdrawal')}><ArrowUpRight size={15}/> Retirar</button></div></article> })}</section> : <section className="panel"><EmptyState title="Crie seu primeiro cofrinho" text="Pode ser sua reserva, uma viagem ou o saldo que quer manter guardado. Você informa o saldo inicial e registra entradas e retiradas." action={<button className="button primary" onClick={openNewPot}><Plus size={15}/> Criar cofrinho</button>}/></section>}
         <section className="panel entries-panel"><PanelHeading title="Movimentações do mês" subtitle={`Entradas e retiradas em ${monthName(selectedMonth)}`}/>{monthMovements.length ? <div className="table-wrap"><table className="entry-table"><thead><tr><th>Cofrinho</th><th>Tipo</th><th>Data</th><th>Observação</th><th className="align-right">Valor</th><th/></tr></thead><tbody>{[...monthMovements].sort((a,b)=>b.moved_on.localeCompare(a.moved_on)).map((item)=><tr key={item.id}><td>{pots.find(p=>p.id===item.pot_id)?.name || 'Cofrinho'}</td><td>{item.kind==='deposit'?'Guardado':'Retirado'}</td><td>{fmtDate(item.moved_on)}</td><td>{item.note || '—'}</td><td className={`align-right amount ${item.kind==='deposit'?'income-text':'withdrawal-text'}`}>{item.kind==='deposit'?'+':'−'} {brl(item.amount)}</td><td><button className="icon-button danger" title="Excluir movimentação" onClick={()=>deleteMovement(item)}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div> : <EmptyState title="Sem movimentações neste mês" text="As movimentações que você registrar nos cofrinhos aparecerão aqui."/>}</section>
       </> : activePage === 'categories' ? <>
-        <section className="panel categories-manager"><PanelHeading title="Categorias personalizadas" subtitle="Categorias removidas não apagam lançamentos antigos."/><form className="category-add" onSubmit={async(e)=>{e.preventDefault();const {error}=await supabase.from('user_categories').insert({kind:categoryForm.kind,name:categoryForm.name.trim()});if(error)setMessage(error.message);else{setCategoryForm({kind:'expense',name:''});await loadData()}}}><select value={categoryForm.kind} onChange={e=>setCategoryForm({...categoryForm,kind:e.target.value})}><option value="expense">Despesa</option><option value="income">Receita</option></select><input required maxLength="40" placeholder="Nome da categoria" value={categoryForm.name} onChange={e=>setCategoryForm({...categoryForm,name:e.target.value})}/><button className="button primary"><Plus size={15}/> Adicionar</button></form><div className="custom-category-list">{['expense','income'].map(kind=><div key={kind}><h3>{kind==='expense'?'Despesas':'Receitas'}</h3>{userCategories.filter(c=>c.kind===kind).length?userCategories.filter(c=>c.kind===kind).map(c=><div className="custom-category-row" key={c.id}><span>{c.name}</span><button className="icon-button danger" title="Excluir categoria" onClick={async()=>{if(!window.confirm(`Excluir a categoria “${c.name}”?`))return;const {error}=await supabase.from('user_categories').delete().eq('id',c.id);if(error)setMessage(error.message);else loadData()}}><Trash2 size={15}/></button></div>):<p>Nenhuma categoria personalizada.</p>}</div>)}</div></section>
+        <section className="panel categories-manager"><PanelHeading title="Categorias personalizadas" subtitle="Categorias removidas não apagam lançamentos antigos."/><form className="category-add" onSubmit={async(e)=>{e.preventDefault();const {error}=await supabase.from('user_categories').insert({kind:categoryForm.kind,name:categoryForm.name.trim()});if(error)setMessage(error.message);else{setCategoryForm({kind:'expense',name:''});await loadData()}}}><select value={categoryForm.kind} onChange={e=>setCategoryForm({...categoryForm,kind:e.target.value})}><option value="expense">Despesa</option><option value="income">Receita</option></select><input required maxLength="40" placeholder="Nome da categoria" value={categoryForm.name} onChange={e=>setCategoryForm({...categoryForm,name:e.target.value})}/><button className="button primary"><Plus size={15}/> Adicionar</button></form><div className="custom-category-list">{['expense','income'].map(kind=><div key={kind}><h3>{kind==='expense'?'Despesas':'Receitas'}</h3>{userCategories.filter(c=>c.kind===kind).length?userCategories.filter(c=>c.kind===kind).map(c=><div className="custom-category-row" key={c.id}><span>{c.name}</span><button className="icon-button danger" title="Excluir categoria" onClick={()=>requestConfirmation({title:'Excluir categoria?',message:`Excluir a categoria “${c.name}”?`,details:'Os lançamentos antigos que usam essa categoria serão mantidos.',confirmLabel:'Excluir categoria',onConfirm:async()=>{const {error}=await supabase.from('user_categories').delete().eq('id',c.id);if(error)setMessage(error.message);else await loadData()}})}><Trash2 size={15}/></button></div>):<p>Nenhuma categoria personalizada.</p>}</div>)}</div></section>
       </> : <>
         <section className="panel recurring-intro"><Repeat size={20}/><div><b>Como funciona</b><span>As regras geram automaticamente uma conta ou receita pendente no mês selecionado. Ao trocar de mês, o sistema cria aquele mês uma única vez. Lançamentos já criados permanecem mesmo se você pausar ou excluir uma regra.</span></div></section>
         {recurringRules.length ? <section className="recurring-grid">{recurringRules.map((rule) => <article className={`panel recurring-card ${!rule.active?'inactive':''}`} key={rule.id}><div className="recurring-card-head"><span className={`agenda-icon ${rule.kind}`}><Repeat size={16}/></span><span className={`status-pill ${rule.active?'settled':'pending'}`}>{rule.active?'Ativa':'Pausada'}</span></div><h2>{rule.description}</h2><strong>{brl(rule.amount)} <small>/ mês</small></strong><p>{rule.kind==='income'?'Receita':'Despesa'} · dia {rule.day_of_month} · {rule.category}{rule.ends_on?` · até ${fmtDate(rule.ends_on)}`:''}</p><div className="card-actions"><button className="button subtle" onClick={()=>toggleRecurring(rule)}>{rule.active?'Pausar':'Ativar'}</button><button className="icon-button danger" title="Excluir regra" onClick={()=>deleteRecurring(rule)}><Trash2 size={15}/></button></div></article>)}</section> : <section className="panel"><EmptyState title="Nenhuma recorrência cadastrada" text="Automatize aluguel, assinaturas, salário e outras contas ou receitas fixas." action={<button className="button primary" onClick={openNewRecurring}><Plus size={15}/> Criar recorrência</button>}/></section>}
@@ -400,6 +431,8 @@ export default function App() {
 
     {entryModal && <EntryModal title={editingEntryId ? 'Editar lançamento' : 'Novo lançamento'} value={entryForm} cards={cards} customCategories={userCategories} onChange={setEntryForm} onClose={() => setEntryModal(false)} onSubmit={saveEntry} />}
     {cardModal && <CardModal title={editingCardId ? 'Editar cartão' : 'Cadastrar cartão'} value={cardForm} onChange={setCardForm} onClose={() => setCardModal(false)} onSubmit={saveCard} />}
+    {invoiceConfirm && <InvoiceConfirmModal value={invoiceConfirm} month={selectedMonth} onClose={() => setInvoiceConfirm(null)} onConfirm={confirmInvoiceChange} />}
+    {confirmation && <ConfirmationModal value={confirmation} onClose={() => setConfirmation(null)} onConfirm={runConfirmation} />}
     {potModal && <PotModal title={editingPotId ? 'Editar cofrinho' : 'Novo cofrinho'} value={potForm} onChange={setPotForm} onClose={() => setPotModal(false)} onSubmit={savePot} />}
     {movementModal && <MovementModal value={movementForm} pots={pots} onChange={setMovementForm} onClose={() => setMovementModal(false)} onSubmit={saveMovement} />}
     {budgetModal && <BudgetModal value={budgetForm} categories={allExpenseCategories} onChange={setBudgetForm} onClose={() => setBudgetModal(false)} onSubmit={saveBudget} />}
@@ -525,3 +558,7 @@ function SetupScreen() {
 
 function YearPicker({value,onChange}) { return <div className="month-picker"><button className="icon-button" title="Ano anterior" onClick={()=>onChange(String(Number(value)-1))}><ArrowLeft size={16}/></button><label><CalendarDays size={16}/><span>{value}</span><ChevronDown size={14}/><select aria-label="Escolher ano" value={value} onChange={e=>onChange(e.target.value)}>{Array.from({length:11},(_,i)=>String(new Date().getFullYear()-5+i)).map(y=><option key={y}>{y}</option>)}</select></label><button className="icon-button" title="Próximo ano" onClick={()=>onChange(String(Number(value)+1))}><ArrowRight size={16}/></button></div> }
 function ReminderModal({value,onChange,onClose,onSubmit}) { return <Modal title="Lembretes por e-mail" onClose={onClose}><form className="modal-form" onSubmit={onSubmit}><label className="check-label"><input type="checkbox" checked={value.enabled} onChange={e=>onChange({...value,enabled:e.target.checked})}/> Ativar lembretes automáticos de vencimento</label><label>Enviar quantos dias antes?<select value={value.days_before} onChange={e=>onChange({...value,days_before:Number(e.target.value)})}><option value="1">1 dia</option><option value="2">2 dias</option><option value="3">3 dias</option><option value="7">7 dias</option></select></label><p className="modal-help">O envio automático requer configurar a função de e-mail do Supabase e uma conta Resend. Consulte o passo a passo no README.</p><div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Bell size={15}/> Salvar lembretes</button></div></form></Modal> }
+
+function InvoiceConfirmModal({value,month,onClose,onConfirm}) { const total=value.entries.reduce((sum,item)=>sum+Number(item.amount),0); const title=value.reopening?'Reabrir fatura':'Confirmar pagamento da fatura'; return <Modal title={title} onClose={onClose}><div className="invoice-confirm-content"><span className={`invoice-confirm-icon ${value.reopening?'reopen':''}`}><CreditCard size={21}/></span><p>{value.reopening?<>As compras de <b>{value.card.name}</b> na fatura de <b>{monthName(month)}</b> voltarão a ficar pendentes.</>:<>Confirma que a fatura de <b>{value.card.name}</b> de <b>{monthName(month)}</b> foi paga?</>}</p><div className="invoice-confirm-summary"><span>{value.entries.length} compra{value.entries.length===1?'':'s'} nesta fatura</span><strong>{brl(total)}</strong></div>{!value.reopening&&<small>As compras serão marcadas como pagas com a data de hoje. Isso também atualiza o limite disponível calculado.</small>}<div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button type="button" className={`button ${value.reopening?'subtle':'primary'}`} onClick={onConfirm}>{value.reopening?'Sim, reabrir fatura':'Sim, marcar como paga'}</button></div></div></Modal> }
+
+function ConfirmationModal({value,onClose,onConfirm}) { return <Modal title={value.title} onClose={onClose}><div className="invoice-confirm-content"><span className="invoice-confirm-icon reopen"><Trash2 size={21}/></span><p>{value.message}</p>{value.details&&<small>{value.details}</small>}<div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button type="button" className="button confirm-danger" onClick={onConfirm}>{value.confirmLabel}</button></div></div></Modal> }

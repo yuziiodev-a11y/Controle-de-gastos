@@ -262,7 +262,7 @@ export default function App() {
     if (entryForm.kind === 'expense' && !responsibleNames.length) responsibleNames.push(userDisplayName(session.user))
     const enteredResponsibleDetails = entryForm.responsible_details || []
     const responsibleDetails = responsibleNames.map((name) => ({ name, percentage: Number(enteredResponsibleDetails.find((person) => person.name === name)?.percentage ?? (responsibleNames.length === 1 ? 100 : 0)) }))
-    if (responsibleDetails.some((person) => !Number.isFinite(person.percentage) || person.percentage < 0) || Math.round(responsibleDetails.reduce((sum, person) => sum + person.percentage, 0) * 100) !== 10000) {
+    if (entryForm.kind === 'expense' && (responsibleDetails.some((person) => !Number.isFinite(person.percentage) || person.percentage < 0) || Math.round(responsibleDetails.reduce((sum, person) => sum + person.percentage, 0) * 100) !== 10000)) {
       setMessage('A divisão da responsabilidade precisa somar exatamente 100%.'); return
     }
     const enteredShares = entryForm.share_details || []

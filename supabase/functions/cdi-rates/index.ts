@@ -21,8 +21,24 @@ function getErrorMessage(payload: unknown, fallback: string): string {
     for (const key of ['error', 'message', 'mensagem', 'detail']) {
       if (typeof data[key] === 'string' && data[key]) return data[key] as string
     }
+    const nestedError = data.erro ?? data.error
+    if (nestedError && typeof nestedError === 'object') {
+      const nested = nestedError as Record<string, unknown>
+      for (const key of ['detail', 'message', 'mensagem']) {
+        if (typeof nested[key] === 'string' && nested[key]) return nested[key] as string
+      }
+    }
   }
   return fallback
+}
+
+function isEmptySgsResult(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false
+  const data = payload as Record<string, unknown>
+  const nestedError = data.erro ?? data.error
+  if (!nestedError || typeof nestedError !== 'object') return false
+  const nested = nestedError as Record<string, unknown>
+  return Number(nested.statusCode) === 404 && String(nested.detail ?? '').includes('Value(s) not found')
 }
 
 async function fetchRateChunk(start: Date, end: Date): Promise<Array<{ date: string; value: number }>> {
@@ -43,6 +59,11 @@ async function fetchRateChunk(start: Date, end: Date): Promise<Array<{ date: str
   } catch {
     throw new Error(`Banco Central devolveu uma resposta inválida (HTTP ${response.status}).`)
   }
+
+  // O SGS representa intervalos sem observações com esse erro, inclusive
+  // quando a resposta HTTP vem como 200. Isso é normal em fins de semana,
+  // feriados e datas ainda não publicadas.
+  if (isEmptySgsResult(payload)) return []
 
   if (!response.ok) {
     throw new Error(getErrorMessage(payload, `Banco Central respondeu com status ${response.status}.`))

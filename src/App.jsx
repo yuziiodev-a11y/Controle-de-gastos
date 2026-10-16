@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays,
   Check, ChevronDown, CreditCard, LayoutDashboard, LogOut, Pencil, Plus, PiggyBank,
-  ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff,
+  ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff, ChartNoAxesCombined, Tags, Bell,
 } from 'lucide-react'
 import { configured, supabase } from './lib/supabase'
 
@@ -24,7 +24,7 @@ const incomeCategories = ['Salário', 'Freelance', 'Investimentos', 'Reembolso',
 const chartColors = ['#6d28d9', '#8428d8', '#9b36d7', '#5b21b6', '#ad5ce0', '#7336b8', '#bf7ae5', '#8b5ac7', '#d1a6eb']
 const initialEntry = (monthKey = monthOf()) => {
   const date = monthKey === monthOf() ? localDate() : monthStart(monthKey)
-  return { kind: 'expense', description: '', amount: '', category: 'Alimentação', spent_on: date, due_date: date, settled_on: '', status: 'pending', payment_method: 'pix', card_id: '', invoice_month: monthKey }
+  return { kind: 'expense', description: '', amount: '', category: 'Alimentação', spent_on: date, due_date: date, settled_on: '', status: 'pending', payment_method: 'pix', card_id: '', invoice_month: monthKey, installment_count: '1' }
 }
 
 export default function App() {
@@ -40,15 +40,20 @@ export default function App() {
   const [movements, setMovements] = useState([])
   const [activePage, setActivePage] = useState('month')
   const [selectedMonth, setSelectedMonth] = useState(monthOf())
+  const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()))
+  const [userCategories, setUserCategories] = useState([])
+  const [categoryForm, setCategoryForm] = useState({ kind: 'expense', name: '' })
+  const [reminderSettings, setReminderSettings] = useState({ enabled: false, days_before: 1 })
+  const [reminderModal, setReminderModal] = useState(false)
   const [entryModal, setEntryModal] = useState(false)
   const [editingEntryId, setEditingEntryId] = useState(null)
   const [entryForm, setEntryForm] = useState(initialEntry)
   const [cardModal, setCardModal] = useState(false)
   const [editingCardId, setEditingCardId] = useState(null)
-  const [cardForm, setCardForm] = useState({ name: '', closing_day: 10, due_day: 17 })
+  const [cardForm, setCardForm] = useState({ name: '', closing_day: 10, due_day: 17, credit_limit: '', available_limit: '' })
   const [potModal, setPotModal] = useState(false)
   const [editingPotId, setEditingPotId] = useState(null)
-  const [potForm, setPotForm] = useState({ name: '', goal_amount: '', opening_balance: '0' })
+  const [potForm, setPotForm] = useState({ name: '', goal_amount: '', goal_due_date: '', opening_balance: '0' })
   const [movementModal, setMovementModal] = useState(false)
   const [movementForm, setMovementForm] = useState({ pot_id: '', kind: 'deposit', amount: '', moved_on: localDate(), note: '' })
   const [budgets, setBudgets] = useState([])
@@ -72,16 +77,18 @@ export default function App() {
   async function loadData() {
     const { error: recurrenceError } = await supabase.rpc('generate_recurring_expenses', { p_month: monthStart(selectedMonth) })
     if (recurrenceError) setMessage(recurrenceError.message)
-    const [cardResult, entryResult, potResult, movementResult, budgetResult, recurringResult] = await Promise.all([
+    const [cardResult, entryResult, potResult, movementResult, budgetResult, recurringResult, categoryResult, reminderResult] = await Promise.all([
       supabase.from('cards').select('*').order('created_at', { ascending: false }),
       supabase.from('expenses').select('*, cards(name)').order('due_date', { ascending: true }),
       supabase.from('savings_pots').select('*').order('created_at', { ascending: true }),
       supabase.from('savings_movements').select('*').order('moved_on', { ascending: false }),
       supabase.from('category_budgets').select('*').eq('month', monthStart(selectedMonth)),
       supabase.from('recurring_rules').select('*').order('created_at', { ascending: false }),
+      supabase.from('user_categories').select('*').order('name'),
+      supabase.from('reminder_settings').select('*').maybeSingle(),
     ])
-    if (cardResult.error || entryResult.error || potResult.error || movementResult.error || budgetResult.error || recurringResult.error) setMessage(cardResult.error?.message || entryResult.error?.message || potResult.error?.message || movementResult.error?.message || budgetResult.error?.message || recurringResult.error?.message || recurrenceError.message)
-    else { setCards(cardResult.data || []); setEntries(entryResult.data || []); setPots(potResult.data || []); setMovements(movementResult.data || []); setBudgets(budgetResult.data || []); setRecurringRules(recurringResult.data || []) }
+    if (cardResult.error || entryResult.error || potResult.error || movementResult.error || budgetResult.error || recurringResult.error || categoryResult.error || reminderResult.error) setMessage(cardResult.error?.message || entryResult.error?.message || potResult.error?.message || movementResult.error?.message || budgetResult.error?.message || recurringResult.error?.message || categoryResult.error?.message || reminderResult.error?.message || recurrenceError.message)
+    else { setCards(cardResult.data || []); setEntries(entryResult.data || []); setPots(potResult.data || []); setMovements(movementResult.data || []); setBudgets(budgetResult.data || []); setRecurringRules(recurringResult.data || []); setUserCategories(categoryResult.data || []); setReminderSettings(reminderResult.data || { enabled: false, days_before: 1 }) }
   }
 
   async function handleAuth(event) {
@@ -100,24 +107,39 @@ export default function App() {
       kind: item.kind || 'expense', description: item.description, amount: String(item.amount), category: item.category,
       spent_on: item.spent_on, due_date: item.due_date, settled_on: item.settled_on || '', status: item.status || 'settled',
       payment_method: item.payment_method || (item.card_id ? 'credit_card' : 'other'),
-      card_id: item.card_id || '', invoice_month: item.invoice_month?.slice(0, 7) || selectedMonth,
+      card_id: item.card_id || '', invoice_month: item.invoice_month?.slice(0, 7) || selectedMonth, installment_count: '1',
     })
     setEntryModal(true)
   }
 
   async function saveEntry(event) {
     event.preventDefault(); setMessage('')
+    const count = Number(entryForm.installment_count || 1)
+    const amount = Number(entryForm.amount)
     const payload = {
-      kind: entryForm.kind, description: entryForm.description.trim(), amount: Number(entryForm.amount), category: entryForm.category,
-      spent_on: entryForm.spent_on, due_date: entryForm.due_date, status: entryForm.status,
-      settled_on: entryForm.status === 'settled' ? (entryForm.settled_on || entryForm.spent_on) : null,
+      kind: entryForm.kind, description: entryForm.description.trim(), amount, category: entryForm.category,
+      spent_on: entryForm.spent_on, due_date: entryForm.due_date, status: count > 1 ? 'pending' : entryForm.status,
+      settled_on: count > 1 ? null : entryForm.status === 'settled' ? (entryForm.settled_on || entryForm.spent_on) : null,
       payment_method: entryForm.kind === 'expense' ? entryForm.payment_method : 'other',
       card_id: entryForm.kind === 'expense' && entryForm.payment_method === 'credit_card' ? (entryForm.card_id || null) : null,
       invoice_month: monthStart(entryForm.invoice_month || selectedMonth),
     }
-    const result = editingEntryId
-      ? await supabase.from('expenses').update(payload).eq('id', editingEntryId)
-      : await supabase.from('expenses').insert(payload)
+    let result
+    if (editingEntryId) result = await supabase.from('expenses').update(payload).eq('id', editingEntryId)
+    else if (count > 1) {
+      const start = new Date(`${entryForm.invoice_month || selectedMonth}-01T12:00:00`)
+      const cents = Math.round(amount * 100), base = Math.floor(cents / count), remainder = cents % count
+      const group = crypto.randomUUID()
+      const card = cards.find((item) => item.id === entryForm.card_id)
+      const rows = Array.from({ length: count }, (_, index) => {
+        const invoiceDate = new Date(start); invoiceDate.setMonth(invoiceDate.getMonth() + index)
+        const invoiceMonth = monthOf(invoiceDate)
+        const endDay = new Date(invoiceDate.getFullYear(), invoiceDate.getMonth() + 1, 0).getDate()
+        const dueDay = Math.min(Number(card?.due_day || 1), endDay)
+        return { ...payload, amount: (base + (index < remainder ? 1 : 0)) / 100, invoice_month: monthStart(invoiceMonth), due_date: `${invoiceMonth}-${String(dueDay).padStart(2, '0')}`, installment_group_id: group, installment_number: index + 1, installment_count: count }
+      })
+      result = await supabase.from('expenses').insert(rows)
+    } else result = await supabase.from('expenses').insert(payload)
     if (result.error) setMessage(result.error.message)
     else { setEntryModal(false); setEditingEntryId(null); await loadData() }
   }
@@ -128,16 +150,17 @@ export default function App() {
   }
 
   async function deleteEntry(item) {
-    if (!window.confirm(`Excluir “${item.description}”?`)) return
-    const { error } = await supabase.from('expenses').delete().eq('id', item.id)
+    if (!window.confirm(item.installment_group_id ? `Excluir todas as ${item.installment_count} parcelas de “${item.description}”?` : `Excluir “${item.description}”?`)) return
+    const query = supabase.from('expenses').delete()
+    const { error } = item.installment_group_id ? await query.eq('installment_group_id', item.installment_group_id) : await query.eq('id', item.id)
     if (error) setMessage(error.message); else loadData()
   }
 
-  function openNewCard() { setEditingCardId(null); setCardForm({ name: '', closing_day: 10, due_day: 17 }); setCardModal(true) }
-  function openEditCard(item) { setEditingCardId(item.id); setCardForm({ name: item.name, closing_day: item.closing_day, due_day: item.due_day }); setCardModal(true) }
+  function openNewCard() { setEditingCardId(null); setCardForm({ name: '', closing_day: 10, due_day: 17, credit_limit: '', available_limit: '' }); setCardModal(true) }
+  function openEditCard(item) { setEditingCardId(item.id); setCardForm({ name: item.name, closing_day: item.closing_day, due_day: item.due_day, credit_limit: item.credit_limit ?? '', available_limit: item.available_limit ?? '' }); setCardModal(true) }
   async function saveCard(event) {
     event.preventDefault(); setMessage('')
-    const payload = { name: cardForm.name.trim(), closing_day: Number(cardForm.closing_day), due_day: Number(cardForm.due_day) }
+    const payload = { name: cardForm.name.trim(), closing_day: Number(cardForm.closing_day), due_day: Number(cardForm.due_day), credit_limit: cardForm.credit_limit === '' ? null : Number(cardForm.credit_limit), available_limit: cardForm.available_limit === '' ? null : Number(cardForm.available_limit) }
     const result = editingCardId
       ? await supabase.from('cards').update(payload).eq('id', editingCardId)
       : await supabase.from('cards').insert(payload)
@@ -150,11 +173,11 @@ export default function App() {
     if (error) setMessage(error.message); else loadData()
   }
 
-  function openNewPot() { setEditingPotId(null); setPotForm({ name: '', goal_amount: '', opening_balance: '0' }); setPotModal(true) }
-  function openEditPot(item) { setEditingPotId(item.id); setPotForm({ name: item.name, goal_amount: item.goal_amount || '', opening_balance: String(item.opening_balance) }); setPotModal(true) }
+  function openNewPot() { setEditingPotId(null); setPotForm({ name: '', goal_amount: '', goal_due_date: '', opening_balance: '0' }); setPotModal(true) }
+  function openEditPot(item) { setEditingPotId(item.id); setPotForm({ name: item.name, goal_amount: item.goal_amount || '', goal_due_date: item.goal_due_date || '', opening_balance: String(item.opening_balance) }); setPotModal(true) }
   async function savePot(event) {
     event.preventDefault(); setMessage('')
-    const payload = { name: potForm.name.trim(), goal_amount: potForm.goal_amount ? Number(potForm.goal_amount) : null, opening_balance: Number(potForm.opening_balance || 0) }
+    const payload = { name: potForm.name.trim(), goal_amount: potForm.goal_amount ? Number(potForm.goal_amount) : null, goal_due_date: potForm.goal_due_date || null, opening_balance: Number(potForm.opening_balance || 0) }
     const result = editingPotId ? await supabase.from('savings_pots').update(payload).eq('id', editingPotId) : await supabase.from('savings_pots').insert(payload)
     if (result.error) setMessage(result.error.message); else { setPotModal(false); await loadData() }
   }
@@ -210,6 +233,11 @@ export default function App() {
     if (error) setMessage(error.message); else await loadData()
   }
 
+  const allExpenseCategories = [...expenseCategories, ...userCategories.filter((item) => item.kind === 'expense').map((item) => item.name)]
+  const allIncomeCategories = [...incomeCategories, ...userCategories.filter((item) => item.kind === 'income').map((item) => item.name)]
+  const allCategories = [...new Set([...allExpenseCategories, ...allIncomeCategories])]
+  const todayKey = localDate()
+  const dueInSevenDays = entries.filter((item) => item.status === 'pending' && item.due_date >= todayKey && item.due_date <= localDate(new Date(new Date(`${todayKey}T12:00:00`).getTime() + 7 * 86400000)))
   const monthEntries = useMemo(() => entries.filter((item) => {
     const relevantDate = item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on)
     return relevantDate?.startsWith(selectedMonth)
@@ -265,6 +293,8 @@ export default function App() {
       <div className="brand"><span className="brand-mark"><Wallet size={19} /></span><span>meu<span className="brand-light">controle</span></span></div>
       <div className="sidebar-group-label">SEU DINHEIRO</div>
       <button className={`nav-item ${activePage === 'month' ? 'active' : ''}`} onClick={() => setActivePage('month')}><LayoutDashboard size={17} /> Visão mensal</button>
+      <button className={`nav-item ${activePage === 'year' ? 'active' : ''}`} onClick={() => setActivePage('year')}><ChartNoAxesCombined size={17} /> Visão anual</button>
+      <button className={`nav-item ${activePage === 'categories' ? 'active' : ''}`} onClick={() => setActivePage('categories')}><Tags size={17} /> Categorias</button>
       <button className={`nav-item ${activePage === 'cards' ? 'active' : ''}`} onClick={() => setActivePage('cards')}><CreditCard size={17} /> Cartões e faturas</button>
       <button className={`nav-item ${activePage === 'savings' ? 'active' : ''}`} onClick={() => setActivePage('savings')}><PiggyBank size={17} /> Cofrinhos</button>
       <button className={`nav-item ${activePage === 'recurring' ? 'active' : ''}`} onClick={() => setActivePage('recurring')}><Repeat size={17} /> Recorrências</button>
@@ -274,20 +304,22 @@ export default function App() {
 
     <main className="main-content">
       <header className="page-header">
-        <div><p className="eyebrow">CONTROLE FINANCEIRO</p><h1>{activePage === 'month' ? 'Visão mensal' : activePage === 'cards' ? 'Cartões e faturas' : activePage === 'savings' ? 'Cofrinhos' : 'Recorrências'}</h1><p className="page-subtitle">{activePage === 'month' ? 'Acompanhe o que entra, o que sai e o que ainda está pendente.' : activePage === 'cards' ? 'Gerencie seus cartões e acompanhe cada fatura.' : activePage === 'savings' ? 'Acompanhe o dinheiro que você separou para guardar.' : 'Automatize o registro mensal das contas e receitas fixas.'}</p></div>
+        <div><p className="eyebrow">CONTROLE FINANCEIRO</p><h1>{activePage === 'month' ? 'Visão mensal' : activePage === 'year' ? 'Visão anual' : activePage === 'categories' ? 'Categorias' : activePage === 'cards' ? 'Cartões e faturas' : activePage === 'savings' ? 'Cofrinhos' : 'Recorrências'}</h1><p className="page-subtitle">{activePage === 'month' ? 'Acompanhe o que entra, o que sai e o que ainda está pendente.' : activePage === 'year' ? 'Compare suas entradas e despesas mês a mês.' : activePage === 'categories' ? 'Organize seus lançamentos com categorias próprias.' : activePage === 'cards' ? 'Gerencie seus cartões e acompanhe cada fatura.' : activePage === 'savings' ? 'Acompanhe o dinheiro que você separou para guardar.' : 'Automatize o registro mensal das contas e receitas fixas.'}</p></div>
         <div className="header-actions">
           <button className="icon-button privacy-toggle" type="button" aria-label={hideValues ? 'Mostrar valores' : 'Ocultar valores'} aria-pressed={hideValues} title={hideValues ? 'Mostrar valores' : 'Ocultar valores'} onClick={() => setHideValues((hidden) => !hidden)}>{hideValues ? <Eye size={18}/> : <EyeOff size={18}/>}</button>
-          <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />
+          {activePage === 'year' ? <YearPicker value={selectedYear} onChange={setSelectedYear}/> : <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />}
           {activePage === 'month' && <button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button>}
           {activePage === 'cards' && <button className="button primary" onClick={openNewCard}><Plus size={17} /> Novo cartão</button>}
           {activePage === 'savings' && <button className="button primary" onClick={openNewPot}><Plus size={17} /> Novo cofrinho</button>}
           {activePage === 'recurring' && <button className="button primary" onClick={openNewRecurring}><Plus size={17} /> Nova recorrência</button>}
+          {activePage === 'categories' && <button className="button primary" onClick={() => setCategoryForm({ kind: 'expense', name: '' })}><Plus size={17} /> Nova categoria</button>}
         </div>
       </header>
 
       {message && <div className="notice">{message}<button onClick={() => setMessage('')}><X size={15} /></button></div>}
 
       {activePage === 'month' ? <>
+        <section className="panel reminder-strip"><div><Bell size={18}/><span><b>Alertas de vencimento</b><small>{dueInSevenDays.length ? `${dueInSevenDays.length} conta${dueInSevenDays.length === 1 ? '' : 's'} vencem nos próximos 7 dias.` : 'Nenhuma conta vence nos próximos 7 dias.'} Configure também o aviso automático por e-mail.</small></span></div><button className="button subtle" onClick={()=>setReminderModal(true)}>{reminderSettings.enabled?'Configurar':'Ativar e-mail'}</button></section>
         <section className="month-hero">
           <div className="hero-copy"><span className="hero-kicker">RESULTADO PREVISTO DE {monthName(selectedMonth).toLocaleUpperCase('pt-BR')}</span><strong className={monthResult < 0 ? 'negative' : ''}>{brl(monthResult)}</strong><span className="hero-caption">Entradas previstas menos saídas previstas no mês</span></div>
           <div className="hero-breakdown"><div><span><i className="dot income-dot" /> Entradas previstas</span><b>{brl(monthIncome)}</b></div><div><span><i className="dot expense-dot" /> Saídas previstas</span><b>{brl(monthOutgo)}</b></div></div>
@@ -322,30 +354,35 @@ export default function App() {
 
         <section className="panel entries-panel">
           <PanelHeading title="Lançamentos do mês" subtitle={`${filteredMonthEntries.length} de ${sortedMonthEntries.length} registros em ${monthName(selectedMonth)}`} action={<button className="button subtle" onClick={openNewEntry}><Plus size={15} /> Adicionar</button>} />
-          <EntryFilters value={entryFilters} onChange={setEntryFilters} categories={[...new Set([...expenseCategories, ...incomeCategories])]} />
+          <EntryFilters value={entryFilters} onChange={setEntryFilters} categories={allCategories} />
           {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
         </section>
+      </> : activePage === 'year' ? <>
+        {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
       </> : activePage === 'cards' ? <>
         <section className="card-intro"><div><span className="eyebrow">ACOMPANHAMENTO DO MÊS</span><h2>Faturas de {monthName(selectedMonth)}</h2><p>Veja as compras lançadas em cada cartão e os dias de fechamento e vencimento.</p></div><div className="card-intro-total"><span>Total nas faturas</span><strong>{brl(monthCards.reduce((sum, item) => sum + item.invoiceTotal, 0))}</strong></div></section>
-        {cards.length ? <section className="managed-card-grid">{monthCards.map((item, index) => <article className="managed-card" key={item.id}><div className={`bank-card bank-card-${index % 4}`}><div className="bank-card-top"><span>MEU CONTROLE</span><CreditCard size={20} /></div><div className="bank-card-chip" /><b>{item.name}</b><div className="bank-card-footer"><span>FECHAMENTO <strong>{String(item.closing_day).padStart(2, '0')}</strong></span><span>VENCIMENTO <strong>{String(item.due_day).padStart(2, '0')}</strong></span></div></div><div className="managed-card-body"><div><span>Fatura de {monthName(selectedMonth, { month: 'long' })}</span><strong>{brl(item.invoiceTotal)}</strong></div><p>{item.pendingCount} compra{item.pendingCount === 1 ? '' : 's'} ainda pendente{item.pendingCount === 1 ? '' : 's'}</p><div className="card-actions"><button className="button subtle" onClick={() => openEditCard(item)}><Pencil size={14} /> Editar cartão</button><button className="icon-button danger" title="Excluir cartão" onClick={() => deleteCard(item)}><Trash2 size={16} /></button></div></div></article>)}</section> : <section className="panel card-empty"><EmptyState title="Cadastre seu primeiro cartão" text="Depois você poderá acompanhar o total das compras por mês e a data de cada fatura." action={<button className="button primary" onClick={openNewCard}><Plus size={15} /> Cadastrar cartão</button>} /></section>}
+        {cards.length ? <section className="managed-card-grid">{monthCards.map((item, index) => <article className="managed-card" key={item.id}><div className={`bank-card bank-card-${index % 4}`}><div className="bank-card-top"><span>MEU CONTROLE</span><CreditCard size={20} /></div><div className="bank-card-chip" /><b>{item.name}</b><div className="bank-card-footer"><span>FECHAMENTO <strong>{String(item.closing_day).padStart(2, '0')}</strong></span><span>VENCIMENTO <strong>{String(item.due_day).padStart(2, '0')}</strong></span></div></div><div className="managed-card-body"><div><span>Fatura de {monthName(selectedMonth, { month: 'long' })}</span><strong>{brl(item.invoiceTotal)}</strong></div><div className="card-limit-row"><div><span>Limite total</span><strong>{item.credit_limit == null ? '—' : brl(item.credit_limit)}</strong></div><div><span>Disponível agora</span><strong>{item.available_limit == null ? '—' : brl(item.available_limit)}</strong></div></div><p>{item.pendingCount} compra{item.pendingCount === 1 ? '' : 's'} ainda pendente{item.pendingCount === 1 ? '' : 's'}</p><div className="card-actions"><button className="button subtle" onClick={() => openEditCard(item)}><Pencil size={14} /> Editar cartão</button><button className="icon-button danger" title="Excluir cartão" onClick={() => deleteCard(item)}><Trash2 size={16} /></button></div></div></article>)}</section> : <section className="panel card-empty"><EmptyState title="Cadastre seu primeiro cartão" text="Depois você poderá acompanhar o total das compras por mês e a data de cada fatura." action={<button className="button primary" onClick={openNewCard}><Plus size={15} /> Cadastrar cartão</button>} /></section>}
         <section className="panel entries-panel"><PanelHeading title="Compras nos cartões" subtitle={`Lançamentos associados à fatura de ${monthName(selectedMonth)}`} /><EntryTable entries={entries.filter((item) => item.kind === 'expense' && item.card_id && item.invoice_month?.startsWith(selectedMonth)).sort((a, b) => a.spent_on.localeCompare(b.spent_on))} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} emptyText="Não há compras lançadas para as faturas deste mês." /></section>
       </> : activePage === 'savings' ? <>
         <section className="savings-hero"><div><span className="hero-kicker">TOTAL GUARDADO</span><strong>{brl(potBalances.reduce((sum, pot) => sum + pot.balance, 0))}</strong><span className="hero-caption">Saldo somado dos seus cofrinhos</span></div><div className="savings-month"><span>Movimentações em {monthName(selectedMonth)}</span><b className="income-text">+ {brl(monthDeposits)} guardados</b><b className="withdrawal-text">− {brl(monthWithdrawals)} retirados</b></div><PiggyBank className="savings-hero-icon" size={35} /></section>
         <section className="panel savings-note"><PiggyBank size={18}/><span>Os valores dos cofrinhos são um acompanhamento manual separado das despesas. Assim, guardar dinheiro não aparece como um novo gasto no seu orçamento.</span></section>
-        {potBalances.length ? <section className="savings-pot-grid">{potBalances.map((pot) => { const progress = pot.goal_amount ? Math.min(100, pot.balance / Number(pot.goal_amount) * 100) : null; return <article className="panel savings-pot" key={pot.id}><div className="pot-title"><span className="pot-icon"><PiggyBank size={19}/></span><div><h2>{pot.name}</h2><span>{pot.goal_amount ? `Meta: ${brl(pot.goal_amount)}` : 'Sem meta definida'}</span></div><div className="row-actions"><button className="icon-button" title="Editar cofrinho" onClick={() => openEditPot(pot)}><Pencil size={15}/></button><button className="icon-button danger" title="Excluir cofrinho" onClick={() => deletePot(pot)}><Trash2 size={15}/></button></div></div><strong className="pot-balance">{brl(pot.balance)}</strong>{progress !== null && <div className="pot-progress"><div><span>Progresso da meta</span><b>{Math.round(progress)}%</b></div><i><span style={{width:`${progress}%`}}/></i></div>}<div className="pot-actions"><button className="button subtle" onClick={() => openMovement(pot, 'deposit')}><ArrowDownLeft size={15}/> Guardar</button><button className="button subtle" onClick={() => openMovement(pot, 'withdrawal')}><ArrowUpRight size={15}/> Retirar</button></div></article> })}</section> : <section className="panel"><EmptyState title="Crie seu primeiro cofrinho" text="Pode ser sua reserva, uma viagem ou o saldo que quer manter guardado. Você informa o saldo inicial e registra entradas e retiradas." action={<button className="button primary" onClick={openNewPot}><Plus size={15}/> Criar cofrinho</button>}/></section>}
+        {potBalances.length ? <section className="savings-pot-grid">{potBalances.map((pot) => { const progress = pot.goal_amount ? Math.min(100, pot.balance / Number(pot.goal_amount) * 100) : null; return <article className="panel savings-pot" key={pot.id}><div className="pot-title"><span className="pot-icon"><PiggyBank size={19}/></span><div><h2>{pot.name}</h2><span>{pot.goal_amount ? `Meta: ${brl(pot.goal_amount)}` : 'Sem meta definida'}</span></div><div className="row-actions"><button className="icon-button" title="Editar cofrinho" onClick={() => openEditPot(pot)}><Pencil size={15}/></button><button className="icon-button danger" title="Excluir cofrinho" onClick={() => deletePot(pot)}><Trash2 size={15}/></button></div></div><strong className="pot-balance">{brl(pot.balance)}</strong>{pot.goal_due_date && pot.goal_amount && <div className="goal-suggestion">{(() => { const remaining=Math.max(0,Number(pot.goal_amount)-pot.balance); const today=new Date(); const due=new Date(`${pot.goal_due_date}T12:00:00`); const months=Math.max(1,(due.getFullYear()-today.getFullYear())*12+due.getMonth()-today.getMonth()+1); return remaining===0?'Meta alcançada!':`Para chegar até ${fmtDate(pot.goal_due_date)}, guarde cerca de ${brl(remaining/months)} por mês.` })()}</div>}{progress !== null && <div className="pot-progress"><div><span>Progresso da meta</span><b>{Math.round(progress)}%</b></div><i><span style={{width:`${progress}%`}}/></i></div>}<div className="pot-actions"><button className="button subtle" onClick={() => openMovement(pot, 'deposit')}><ArrowDownLeft size={15}/> Guardar</button><button className="button subtle" onClick={() => openMovement(pot, 'withdrawal')}><ArrowUpRight size={15}/> Retirar</button></div></article> })}</section> : <section className="panel"><EmptyState title="Crie seu primeiro cofrinho" text="Pode ser sua reserva, uma viagem ou o saldo que quer manter guardado. Você informa o saldo inicial e registra entradas e retiradas." action={<button className="button primary" onClick={openNewPot}><Plus size={15}/> Criar cofrinho</button>}/></section>}
         <section className="panel entries-panel"><PanelHeading title="Movimentações do mês" subtitle={`Entradas e retiradas em ${monthName(selectedMonth)}`}/>{monthMovements.length ? <div className="table-wrap"><table className="entry-table"><thead><tr><th>Cofrinho</th><th>Tipo</th><th>Data</th><th>Observação</th><th className="align-right">Valor</th><th/></tr></thead><tbody>{[...monthMovements].sort((a,b)=>b.moved_on.localeCompare(a.moved_on)).map((item)=><tr key={item.id}><td>{pots.find(p=>p.id===item.pot_id)?.name || 'Cofrinho'}</td><td>{item.kind==='deposit'?'Guardado':'Retirado'}</td><td>{fmtDate(item.moved_on)}</td><td>{item.note || '—'}</td><td className={`align-right amount ${item.kind==='deposit'?'income-text':'withdrawal-text'}`}>{item.kind==='deposit'?'+':'−'} {brl(item.amount)}</td><td><button className="icon-button danger" title="Excluir movimentação" onClick={()=>deleteMovement(item)}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div> : <EmptyState title="Sem movimentações neste mês" text="As movimentações que você registrar nos cofrinhos aparecerão aqui."/>}</section>
+      </> : activePage === 'categories' ? <>
+        <section className="panel categories-manager"><PanelHeading title="Categorias personalizadas" subtitle="Categorias removidas não apagam lançamentos antigos."/><form className="category-add" onSubmit={async(e)=>{e.preventDefault();const {error}=await supabase.from('user_categories').insert({kind:categoryForm.kind,name:categoryForm.name.trim()});if(error)setMessage(error.message);else{setCategoryForm({kind:'expense',name:''});await loadData()}}}><select value={categoryForm.kind} onChange={e=>setCategoryForm({...categoryForm,kind:e.target.value})}><option value="expense">Despesa</option><option value="income">Receita</option></select><input required maxLength="40" placeholder="Nome da categoria" value={categoryForm.name} onChange={e=>setCategoryForm({...categoryForm,name:e.target.value})}/><button className="button primary"><Plus size={15}/> Adicionar</button></form><div className="custom-category-list">{['expense','income'].map(kind=><div key={kind}><h3>{kind==='expense'?'Despesas':'Receitas'}</h3>{userCategories.filter(c=>c.kind===kind).length?userCategories.filter(c=>c.kind===kind).map(c=><div className="custom-category-row" key={c.id}><span>{c.name}</span><button className="icon-button danger" title="Excluir categoria" onClick={async()=>{if(!window.confirm(`Excluir a categoria “${c.name}”?`))return;const {error}=await supabase.from('user_categories').delete().eq('id',c.id);if(error)setMessage(error.message);else loadData()}}><Trash2 size={15}/></button></div>):<p>Nenhuma categoria personalizada.</p>}</div>)}</div></section>
       </> : <>
         <section className="panel recurring-intro"><Repeat size={20}/><div><b>Como funciona</b><span>As regras geram automaticamente uma conta ou receita pendente no mês selecionado. Ao trocar de mês, o sistema cria aquele mês uma única vez. Lançamentos já criados permanecem mesmo se você pausar ou excluir uma regra.</span></div></section>
         {recurringRules.length ? <section className="recurring-grid">{recurringRules.map((rule) => <article className={`panel recurring-card ${!rule.active?'inactive':''}`} key={rule.id}><div className="recurring-card-head"><span className={`agenda-icon ${rule.kind}`}><Repeat size={16}/></span><span className={`status-pill ${rule.active?'settled':'pending'}`}>{rule.active?'Ativa':'Pausada'}</span></div><h2>{rule.description}</h2><strong>{brl(rule.amount)} <small>/ mês</small></strong><p>{rule.kind==='income'?'Receita':'Despesa'} · dia {rule.day_of_month} · {rule.category}{rule.ends_on?` · até ${fmtDate(rule.ends_on)}`:''}</p><div className="card-actions"><button className="button subtle" onClick={()=>toggleRecurring(rule)}>{rule.active?'Pausar':'Ativar'}</button><button className="icon-button danger" title="Excluir regra" onClick={()=>deleteRecurring(rule)}><Trash2 size={15}/></button></div></article>)}</section> : <section className="panel"><EmptyState title="Nenhuma recorrência cadastrada" text="Automatize aluguel, assinaturas, salário e outras contas ou receitas fixas." action={<button className="button primary" onClick={openNewRecurring}><Plus size={15}/> Criar recorrência</button>}/></section>}
       </>}
     </main>
 
-    {entryModal && <EntryModal title={editingEntryId ? 'Editar lançamento' : 'Novo lançamento'} value={entryForm} cards={cards} onChange={setEntryForm} onClose={() => setEntryModal(false)} onSubmit={saveEntry} />}
+    {entryModal && <EntryModal title={editingEntryId ? 'Editar lançamento' : 'Novo lançamento'} value={entryForm} cards={cards} customCategories={userCategories} onChange={setEntryForm} onClose={() => setEntryModal(false)} onSubmit={saveEntry} />}
     {cardModal && <CardModal title={editingCardId ? 'Editar cartão' : 'Cadastrar cartão'} value={cardForm} onChange={setCardForm} onClose={() => setCardModal(false)} onSubmit={saveCard} />}
     {potModal && <PotModal title={editingPotId ? 'Editar cofrinho' : 'Novo cofrinho'} value={potForm} onChange={setPotForm} onClose={() => setPotModal(false)} onSubmit={savePot} />}
     {movementModal && <MovementModal value={movementForm} pots={pots} onChange={setMovementForm} onClose={() => setMovementModal(false)} onSubmit={saveMovement} />}
-    {budgetModal && <BudgetModal value={budgetForm} categories={expenseCategories} onChange={setBudgetForm} onClose={() => setBudgetModal(false)} onSubmit={saveBudget} />}
-    {recurringModal && <RecurringModal value={recurringForm} cards={cards} onChange={setRecurringForm} onClose={() => setRecurringModal(false)} onSubmit={saveRecurring} />}
+    {budgetModal && <BudgetModal value={budgetForm} categories={allExpenseCategories} onChange={setBudgetForm} onClose={() => setBudgetModal(false)} onSubmit={saveBudget} />}
+    {reminderModal && <ReminderModal value={reminderSettings} onChange={setReminderSettings} onClose={() => setReminderModal(false)} onSubmit={async(e)=>{e.preventDefault();const {error}=await supabase.from('reminder_settings').upsert({...reminderSettings,updated_at:new Date().toISOString()},{onConflict:'user_id'});if(error)setMessage(error.message);else{setReminderModal(false);await loadData()}}} />}
+    {recurringModal && <RecurringModal value={recurringForm} cards={cards} customCategories={userCategories} onChange={setRecurringForm} onClose={() => setRecurringModal(false)} onSubmit={saveRecurring} />}
   </div>
 }
 
@@ -372,21 +409,21 @@ function EmptyState({ title, text, action }) {
 
 function EntryTable({ entries, onEdit, onDelete, onSettle, emptyText = 'Não há lançamentos neste mês.' }) {
   if (!entries.length) return <EmptyState title="Nada para mostrar" text={emptyText} />
-  return <div className="table-wrap"><table className="entry-table"><thead><tr><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Data / vencimento</th><th>Situação</th><th className="align-right">Valor</th><th aria-label="Ações" /></tr></thead><tbody>{entries.map((item) => { const displayDate = item.card_id ? item.spent_on : item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on); return <tr key={item.id}><td><div className="entry-name"><span className={`entry-kind-icon ${item.kind}`} title={item.kind === 'income' ? 'Receita' : 'Despesa'}>{item.kind === 'income' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><b>{item.description}</b><small>{item.kind === 'income' ? 'Receita' : 'Despesa'}</small></span></div></td><td>{item.category}</td><td>{item.kind === 'income' ? '—' : paymentLabel(item)}</td><td>{fmtDate(displayDate)}</td><td><span className={`status-pill ${item.status}`}>{item.status === 'pending' ? 'Pendente' : item.kind === 'income' ? 'Recebida' : 'Paga'}</span></td><td className={`align-right amount ${item.kind === 'income' ? 'income-text' : ''}`}>{item.kind === 'income' ? '+' : '−'} {brl(item.amount)}</td><td><div className="row-actions">{item.status === 'pending' && <button className="icon-button" title={item.kind === 'income' ? 'Marcar recebida' : 'Marcar paga'} onClick={() => onSettle(item)}><Check size={15} /></button>}<button className="icon-button" title="Editar" onClick={() => onEdit(item)}><Pencil size={15} /></button><button className="icon-button danger" title="Excluir" onClick={() => onDelete(item)}><Trash2 size={15} /></button></div></td></tr> })}</tbody></table></div>
+  return <div className="table-wrap"><table className="entry-table"><thead><tr><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Data / vencimento</th><th>Situação</th><th className="align-right">Valor</th><th aria-label="Ações" /></tr></thead><tbody>{entries.map((item) => { const displayDate = item.card_id ? item.spent_on : item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on); return <tr key={item.id}><td><div className="entry-name"><span className={`entry-kind-icon ${item.kind}`} title={item.kind === 'income' ? 'Receita' : 'Despesa'}>{item.kind === 'income' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><b>{item.description}</b><small>{item.installment_number ? `Parcela ${item.installment_number} de ${item.installment_count}` : item.kind === 'income' ? 'Receita' : 'Despesa'}</small></span></div></td><td>{item.category}</td><td>{item.kind === 'income' ? '—' : paymentLabel(item)}</td><td>{fmtDate(displayDate)}</td><td><span className={`status-pill ${item.status}`}>{item.status === 'pending' ? 'Pendente' : item.kind === 'income' ? 'Recebida' : 'Paga'}</span></td><td className={`align-right amount ${item.kind === 'income' ? 'income-text' : ''}`}>{item.kind === 'income' ? '+' : '−'} {brl(item.amount)}</td><td><div className="row-actions">{item.status === 'pending' && <button className="icon-button" title={item.kind === 'income' ? 'Marcar recebida' : 'Marcar paga'} onClick={() => onSettle(item)}><Check size={15} /></button>}<button className="icon-button" title="Editar" onClick={() => onEdit(item)}><Pencil size={15} /></button><button className="icon-button danger" title="Excluir" onClick={() => onDelete(item)}><Trash2 size={15} /></button></div></td></tr> })}</tbody></table></div>
 }
 
-function EntryModal({ title, value, cards, onChange, onClose, onSubmit }) {
+function EntryModal({ title, value, cards, customCategories = [], onChange, onClose, onSubmit }) {
   const set = (key, next) => onChange({ ...value, [key]: next })
-  const categories = value.kind === 'income' ? incomeCategories : expenseCategories
+  const categories = [...(value.kind === 'income' ? incomeCategories : expenseCategories), ...customCategories.filter((item) => item.kind === value.kind).map((item) => item.name)]
   return <Modal title={title} onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
-    <label>Tipo de lançamento<select value={value.kind} onChange={(event) => onChange({ ...value, kind: event.target.value, category: event.target.value === 'income' ? 'Salário' : 'Alimentação', payment_method: event.target.value === 'income' ? 'other' : 'pix', card_id: '' })}><option value="expense">Despesa / conta a pagar</option><option value="income">Receita / conta a receber</option></select></label>
+    <label>Tipo de lançamento<select value={value.kind} onChange={(event) => onChange({ ...value, kind: event.target.value, category: (event.target.value === 'income' ? [...incomeCategories,...customCategories.filter(c=>c.kind==='income').map(c=>c.name)] : [...expenseCategories,...customCategories.filter(c=>c.kind==='expense').map(c=>c.name)])[0], payment_method: event.target.value === 'income' ? 'other' : 'pix', card_id: '' })}><option value="expense">Despesa / conta a pagar</option><option value="income">Receita / conta a receber</option></select></label>
     <label>Descrição<input required maxLength="100" value={value.description} onChange={(event) => set('description', event.target.value)} placeholder={value.kind === 'income' ? 'Ex.: salário' : 'Ex.: aluguel'} /></label>
     <div className="modal-form-two"><label>Valor<input type="number" min="0.01" step="0.01" required value={value.amount} onChange={(event) => set('amount', event.target.value)} placeholder="0,00" /></label><label>Categoria<select value={value.category} onChange={(event) => set('category', event.target.value)}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label></div>
     <div className="modal-form-two"><label>Data do lançamento<input type="date" required value={value.spent_on} onChange={(event) => set('spent_on', event.target.value)} /></label><label>Vencimento / previsão<input type="date" required value={value.due_date} onChange={(event) => set('due_date', event.target.value)} /></label></div>
     <label>Situação<select value={value.status} onChange={(event) => onChange({ ...value, status: event.target.value, settled_on: event.target.value === 'settled' ? (value.settled_on || value.spent_on) : '' })}><option value="pending">Pendente</option><option value="settled">Já paga / recebida</option></select></label>
     {value.kind === 'expense' && <label>Forma de pagamento<select value={value.payment_method || (value.card_id ? 'credit_card' : 'other')} onChange={(event) => onChange({ ...value, payment_method: event.target.value, card_id: event.target.value === 'credit_card' ? value.card_id : '' })}><option value="pix">Pix</option><option value="cash">Dinheiro</option><option value="debit_card">Cartão de débito</option><option value="credit_card">Cartão de crédito</option><option value="other">Outro</option></select></label>}
     {value.kind === 'expense' && value.payment_method === 'credit_card' && <label>Cartão de crédito<select required value={value.card_id} onChange={(event) => set('card_id', event.target.value)}><option value="">Escolha o cartão</option>{cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label>}
-    {value.kind === 'expense' && value.payment_method === 'credit_card' && value.card_id && <label>Mês da fatura<input type="month" required value={value.invoice_month} onChange={(event) => set('invoice_month', event.target.value)} /></label>}
+    {value.kind === 'expense' && value.payment_method === 'credit_card' && value.card_id && <><label>Mês da primeira fatura<input type="month" required value={value.invoice_month} onChange={(event) => set('invoice_month', event.target.value)} /></label>{!title.startsWith('Editar') && <><label>Parcelas<select value={value.installment_count || '1'} onChange={event=>set('installment_count',event.target.value)}>{Array.from({length:24},(_,i)=>i+1).map(n=><option key={n} value={n}>{n===1?'À vista':`${n} parcelas`}</option>)}</select></label>{Number(value.installment_count)>1&&<p className="modal-help">O total será dividido entre as faturas mensais; as parcelas serão criadas como pendentes.</p>}</>}</>}
     {value.status === 'settled' && <label>Data de pagamento / recebimento<input type="date" value={value.settled_on || value.spent_on} onChange={(event) => set('settled_on', event.target.value)} /></label>}
     <div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15} /> Salvar lançamento</button></div>
   </form></Modal>
@@ -397,6 +434,8 @@ function CardModal({ title, value, onChange, onClose, onSubmit }) {
   return <Modal title={title} onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
     <label>Nome do cartão<input required maxLength="60" value={value.name} onChange={(event) => set('name', event.target.value)} placeholder="Ex.: Cartão principal" /></label>
     <div className="modal-form-two"><label>Dia de fechamento<input type="number" min="1" max="31" required value={value.closing_day} onChange={(event) => set('closing_day', event.target.value)} /></label><label>Dia de vencimento<input type="number" min="1" max="31" required value={value.due_day} onChange={(event) => set('due_day', event.target.value)} /></label></div>
+    <div className="modal-form-two"><label>Limite total (opcional)<input type="number" min="0" step="0.01" value={value.credit_limit} onChange={(event) => set('credit_limit', event.target.value)} placeholder="Ex.: 5000,00" /></label><label>Limite disponível atual (opcional)<input type="number" min="0" step="0.01" value={value.available_limit} onChange={(event) => set('available_limit', event.target.value)} placeholder="Ex.: 3200,00" /></label></div>
+    <p className="modal-help">Informe os valores que aparecem no aplicativo do cartão. O limite disponível é atualizado manualmente.</p>
     <div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15} /> Salvar cartão</button></div>
   </form></Modal>
 }
@@ -406,7 +445,7 @@ function PotModal({ title, value, onChange, onClose, onSubmit }) {
   return <Modal title={title} onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
     <label>Nome do cofrinho<input required maxLength="60" value={value.name} onChange={(event) => set('name', event.target.value)} placeholder="Ex.: Reserva de emergência" /></label>
     <div className="modal-form-two"><label>Saldo inicial<input type="number" min="0" step="0.01" required value={value.opening_balance} onChange={(event) => set('opening_balance', event.target.value)} /></label><label>Meta (opcional)<input type="number" min="0.01" step="0.01" value={value.goal_amount} onChange={(event) => set('goal_amount', event.target.value)} placeholder="Ex.: 5000,00" /></label></div>
-    <p className="modal-help">O saldo inicial é o valor que já está guardado hoje. Depois, registre cada depósito ou retirada.</p>
+    <label>Prazo da meta (opcional)<input type="date" value={value.goal_due_date || ''} onChange={event=>set('goal_due_date',event.target.value)}/></label><p className="modal-help">O saldo inicial é o valor que já está guardado hoje. Com uma meta e prazo, o cofrinho calcula quanto guardar por mês.</p>
     <div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15} /> Salvar cofrinho</button></div>
   </form></Modal>
 }
@@ -435,9 +474,9 @@ function EntryFilters({ value, onChange, categories }) {
   return <div className="entry-filters"><label className="search-field"><Search size={16}/><input placeholder="Buscar descrição" value={value.search} onChange={(event) => set('search', event.target.value)}/></label><label><SlidersHorizontal size={14}/><select value={value.kind} onChange={(event) => set('kind', event.target.value)}><option value="all">Todos os tipos</option><option value="expense">Despesas</option><option value="income">Receitas</option></select></label><label><select value={value.status} onChange={(event) => set('status', event.target.value)}><option value="all">Todas as situações</option><option value="pending">Pendentes</option><option value="settled">Pagas / recebidas</option></select></label><label><select value={value.category} onChange={(event) => set('category', event.target.value)}><option value="all">Todas as categorias</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label><select value={value.payment} onChange={(event) => set('payment', event.target.value)}><option value="all">Todas as formas</option><option value="pix">Pix</option><option value="cash">Dinheiro</option><option value="debit_card">Débito</option><option value="credit_card">Crédito</option><option value="other">Outro</option></select></label></div>
 }
 
-function RecurringModal({ value, cards, onChange, onClose, onSubmit }) {
+function RecurringModal({ value, cards, customCategories = [], onChange, onClose, onSubmit }) {
   const set = (key, next) => onChange({ ...value, [key]: next })
-  const categories = value.kind === 'income' ? incomeCategories : expenseCategories
+  const categories = [...(value.kind === 'income' ? incomeCategories : expenseCategories), ...customCategories.filter((item) => item.kind === value.kind).map((item) => item.name)]
   return <Modal title="Nova recorrência mensal" onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
     <label>Tipo<select value={value.kind} onChange={(event) => { const kind = event.target.value; onChange({ ...value, kind, category: kind === 'income' ? 'Salário' : 'Moradia', payment_method: kind === 'income' ? 'other' : 'pix', card_id: '' }) }}><option value="expense">Despesa / conta a pagar</option><option value="income">Receita / conta a receber</option></select></label>
     <label>Descrição<input required maxLength="100" value={value.description} onChange={(event) => set('description', event.target.value)} placeholder="Ex.: aluguel"/></label>
@@ -461,3 +500,6 @@ function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, onS
 function SetupScreen() {
   return <main className="auth-screen"><section className="auth-card setup-card"><div className="brand"><span className="brand-mark"><Wallet size={19} /></span><span>meu<span className="brand-light">controle</span></span></div><p className="eyebrow">CONFIGURAÇÃO INICIAL</p><h1>Conecte seu projeto Supabase</h1><p className="auth-copy">Configure as variáveis locais e aplique as migrações da pasta <code>supabase/migrations</code>.</p><p className="privacy-note">Use somente a chave publicável no frontend. Nunca coloque chaves secretas neste projeto.</p></section></main>
 }
+
+function YearPicker({value,onChange}) { return <div className="month-picker"><button className="icon-button" title="Ano anterior" onClick={()=>onChange(String(Number(value)-1))}><ArrowLeft size={16}/></button><label><CalendarDays size={16}/><span>{value}</span><ChevronDown size={14}/><select aria-label="Escolher ano" value={value} onChange={e=>onChange(e.target.value)}>{Array.from({length:11},(_,i)=>String(new Date().getFullYear()-5+i)).map(y=><option key={y}>{y}</option>)}</select></label><button className="icon-button" title="Próximo ano" onClick={()=>onChange(String(Number(value)+1))}><ArrowRight size={16}/></button></div> }
+function ReminderModal({value,onChange,onClose,onSubmit}) { return <Modal title="Lembretes por e-mail" onClose={onClose}><form className="modal-form" onSubmit={onSubmit}><label className="check-label"><input type="checkbox" checked={value.enabled} onChange={e=>onChange({...value,enabled:e.target.checked})}/> Ativar lembretes automáticos de vencimento</label><label>Enviar quantos dias antes?<select value={value.days_before} onChange={e=>onChange({...value,days_before:Number(e.target.value)})}><option value="1">1 dia</option><option value="2">2 dias</option><option value="3">3 dias</option><option value="7">7 dias</option></select></label><p className="modal-help">O envio automático requer configurar a função de e-mail do Supabase e uma conta Resend. Consulte o passo a passo no README.</p><div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Bell size={15}/> Salvar lembretes</button></div></form></Modal> }

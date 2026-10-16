@@ -30,3 +30,59 @@ A área Cofrinhos acompanha saldos guardados manualmente, com saldo inicial, met
 ### Orçamento, recorrências e relatórios
 
 Execute `supabase/migrations/202610160006_budgets_recurring.sql` no SQL Editor, depois da migração 005. A visão mensal permite salvar limites por categoria e mês, pesquisar/filtrar lançamentos e comparar entradas e despesas dos últimos seis meses. A página Recorrências cria automaticamente uma conta a pagar ou receber para o mês selecionado; cada regra gera no máximo um lançamento por mês, e lançamentos já gerados ficam preservados mesmo quando a regra é pausada ou excluída. A sobra estimada considera o resultado previsto do mês menos os depósitos registrados nos cofrinhos; é uma estimativa baseada nos dados lançados, não um saldo bancário.
+
+### Limites dos cartões
+
+Para guardar o limite total e o valor disponível atual de cada cartão, execute `supabase/migrations/202610160007_card_credit_limits.sql` depois das migrações anteriores. Os campos são opcionais e o limite disponível é informado manualmente a partir do aplicativo do cartão.
+
+### Recursos novos (migração 008)
+
+Execute `supabase/migrations/202610160008_finance_expansions.sql` no SQL Editor depois da migração 007. Ela habilita:
+
+- **Compras parceladas:** em um lançamento no cartão, informe o total e o número de parcelas. O sistema distribui o total em centavos pelas faturas mensais seguintes e cria cada parcela como pendente. O valor total pode não dividir exatamente; os centavos restantes são distribuídos nas primeiras parcelas. Excluir uma parcela exclui o grupo inteiro.
+- **Metas com prazo:** informe a meta e a data final no cofrinho. A página calcula quanto guardar por mês considerando o saldo atual e os meses até a data.
+- **Lembretes:** o painel mensal mostra contas pendentes com vencimento nos próximos sete dias. A configuração de e-mail permite escolher antecedência de 1, 2, 3 ou 7 dias.
+- **Visão anual:** compare entradas, despesas e resultado de cada mês; clique em um mês para abrir a visão mensal.
+- **Categorias personalizadas:** crie categorias separadas para despesas e receitas. Excluir uma categoria não altera lançamentos antigos.
+
+#### Ativar lembretes automáticos por e-mail
+
+O lembrete por e-mail usa uma Supabase Edge Function agendada e o serviço Resend. Você precisa de uma chave de API do Resend e de um endereço de remetente verificado no Resend. A chave e o segredo de chamada ficam somente nos segredos da Edge Function; não os coloque em `VITE_*` nem no frontend. Consulte os guias oficiais do [Supabase para envio via Resend](https://supabase.com/docs/guides/functions/examples/send-emails) e para [segredos de Edge Functions](https://supabase.com/docs/guides/functions/secrets).
+
+1. No Resend, crie uma API key e verifique o domínio/endereço que será usado como remetente.
+2. No terminal, na pasta do projeto, vincule a pasta Supabase ao projeto: `supabase link --project-ref SEU_PROJECT_REF`.
+3. Configure os segredos (substitua os valores pelos seus; não os envie em chats nem os adicione ao Git):
+
+   ```sh
+   supabase secrets set RESEND_API_KEY=re_... REMINDER_FROM_EMAIL="Meu Controle <lembretes@seudominio.com>" REMINDER_CRON_SECRET="gere-uma-string-aleatoria-longa"
+   ```
+
+   No Supabase hospedado, a função recebe as chaves administrativas do projeto pelo ambiente de execução; nenhuma chave administrativa deve ser copiada para o navegador.
+4. Publique a função: `supabase functions deploy send-due-reminders`.
+5. No painel do Supabase, habilite as extensões `pg_cron`, `pg_net` e `supabase_vault` (Vault). No SQL Editor, salve a URL do projeto e o mesmo segredo `REMINDER_CRON_SECRET` no Vault:
+
+   ```sql
+   select vault.create_secret('https://SEU_PROJECT_REF.supabase.co', 'reminder_project_url');
+   select vault.create_secret('COLE_AQUI_O_MESMO_REMINDER_CRON_SECRET', 'reminder_cron_secret');
+   ```
+
+6. Ainda no SQL Editor, agende a execução diária às 12:00 UTC (09:00 no horário de Brasília/Bahia):
+
+   ```sql
+   select cron.schedule(
+     'meu-controle-due-reminders',
+     '0 12 * * *',
+     $$
+       select net.http_post(
+         url := (select decrypted_secret from vault.decrypted_secrets where name = 'reminder_project_url' limit 1) || '/functions/v1/send-due-reminders',
+         headers := jsonb_build_object(
+           'Content-Type', 'application/json',
+           'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'reminder_cron_secret' limit 1)
+         ),
+         body := '{}'::jsonb
+       );
+     $$
+   );
+   ```
+
+A função envia um resumo apenas dos lançamentos pendentes que vencem na antecedência escolhida e registra cada envio para evitar repetição. O agendamento usa `pg_cron` + `pg_net` e guarda o segredo no Vault, conforme o [guia oficial do Supabase para agendar Edge Functions](https://supabase.com/docs/guides/functions/schedule-functions). Você pode conferir/pausar o job na página Cron do Supabase.

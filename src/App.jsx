@@ -255,7 +255,9 @@ export default function App() {
 
   async function saveEntry(event) {
     event.preventDefault(); setMessage('')
-    const count = Number(entryForm.installment_count || 1)
+    const count = entryForm.kind === 'expense' && entryForm.payment_method === 'credit_card'
+      ? Number(entryForm.installment_count || 1)
+      : 1
     const amount = Number(entryForm.amount)
     const participantNames = entryForm.kind === 'expense' ? [...new Set(entryForm.shared_with.split(/[,;]/).map((name) => name.trim()).filter(Boolean))] : []
     const responsibleNames = entryForm.kind === 'expense' ? [...new Set((entryForm.responsible_person || '').split(/[,;]/).map((name) => name.trim()).filter(Boolean))] : []

@@ -63,6 +63,7 @@ export default function App() {
   const [budgetModal, setBudgetModal] = useState(false)
   const [budgetForm, setBudgetForm] = useState({ category: 'Alimentação', amount: '' })
   const [recurringModal, setRecurringModal] = useState(false)
+  const [editingRecurringId, setEditingRecurringId] = useState(null)
   const [recurringForm, setRecurringForm] = useState({ kind: 'expense', description: '', amount: '', category: 'Moradia', day_of_month: '1', payment_method: 'pix', card_id: '', starts_on: monthStart(monthOf()), ends_on: '' })
   const [entryFilters, setEntryFilters] = useState({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all' })
   const [hideValues, setHideValues] = useState(false)
@@ -185,9 +186,11 @@ export default function App() {
       details: isInstallmentGroup ? 'Essa ação remove todas as parcelas vinculadas à compra.' : 'Essa ação não pode ser desfeita.',
       confirmLabel: isInstallmentGroup ? 'Excluir parcelas' : 'Excluir lançamento',
       onConfirm: async () => {
+        setEntries((current) => current.filter((entry) => isInstallmentGroup ? entry.installment_group_id !== item.installment_group_id : entry.id !== item.id))
         const query = supabase.from('expenses').delete()
         const { error } = isInstallmentGroup ? await query.eq('installment_group_id', item.installment_group_id) : await query.eq('id', item.id)
-        if (error) setMessage(error.message); else await loadData()
+        if (error) setMessage(error.message)
+        await loadData()
       },
     })
   }
@@ -205,8 +208,11 @@ export default function App() {
   }
   function deleteCard(item) {
     requestConfirmation({ title: 'Excluir cartão?', message: `Excluir o cartão “${item.name}”?`, details: 'Os lançamentos associados serão mantidos, mas ficarão sem cartão vinculado.', confirmLabel: 'Excluir cartão', onConfirm: async () => {
+      setCards((current) => current.filter((card) => card.id !== item.id))
+      setEntries((current) => current.map((entry) => entry.card_id === item.id ? { ...entry, card_id: null, cards: null } : entry))
       const { error } = await supabase.from('cards').delete().eq('id', item.id)
-      if (error) setMessage(error.message); else await loadData()
+      if (error) setMessage(error.message)
+      await loadData()
     } })
   }
 
@@ -232,14 +238,19 @@ export default function App() {
   }
   function deleteMovement(item) {
     requestConfirmation({ title: 'Excluir movimentação?', message: 'Excluir esta movimentação do cofrinho?', details: 'O saldo do cofrinho será recalculado sem este registro.', confirmLabel: 'Excluir movimentação', onConfirm: async () => {
+      setMovements((current) => current.filter((movement) => movement.id !== item.id))
       const { error } = await supabase.from('savings_movements').delete().eq('id', item.id)
-      if (error) setMessage(error.message); else await loadData()
+      if (error) setMessage(error.message)
+      await loadData()
     } })
   }
   function deletePot(item) {
     requestConfirmation({ title: 'Excluir cofrinho?', message: `Excluir o cofrinho “${item.name}” e suas movimentações?`, details: 'O saldo e o histórico deste cofrinho serão removidos.', confirmLabel: 'Excluir cofrinho', onConfirm: async () => {
+      setPots((current) => current.filter((pot) => pot.id !== item.id))
+      setMovements((current) => current.filter((movement) => movement.pot_id !== item.id))
       const { error } = await supabase.from('savings_pots').delete().eq('id', item.id)
-      if (error) setMessage(error.message); else await loadData()
+      if (error) setMessage(error.message)
+      await loadData()
     } })
   }
 
@@ -250,19 +261,34 @@ export default function App() {
   }
   function deleteBudget(item) {
     requestConfirmation({ title: 'Remover limite?', message: `Remover o limite de ${item.category} deste mês?`, details: 'Isso remove apenas o limite planejado; os lançamentos continuam salvos.', confirmLabel: 'Remover limite', onConfirm: async () => {
+      setBudgets((current) => current.filter((budget) => budget.id !== item.id))
       const { error } = await supabase.from('category_budgets').delete().eq('id', item.id)
-      if (error) setMessage(error.message); else await loadData()
+      if (error) setMessage(error.message)
+      await loadData()
     } })
   }
   function openNewRecurring() {
+    setEditingRecurringId(null)
     setRecurringForm({ kind: 'expense', description: '', amount: '', category: 'Moradia', day_of_month: '1', payment_method: 'pix', card_id: '', starts_on: monthStart(selectedMonth), ends_on: '' })
+    setRecurringModal(true)
+  }
+  function openEditRecurring(rule) {
+    setEditingRecurringId(rule.id)
+    setRecurringForm({
+      kind: rule.kind, description: rule.description, amount: String(rule.amount), category: rule.category,
+      day_of_month: String(rule.day_of_month), payment_method: rule.payment_method || 'pix',
+      card_id: rule.card_id || '', starts_on: rule.starts_on, ends_on: rule.ends_on || '',
+    })
     setRecurringModal(true)
   }
   async function saveRecurring(event) {
     event.preventDefault(); setMessage('')
     const payload = { ...recurringForm, amount: Number(recurringForm.amount), day_of_month: Number(recurringForm.day_of_month), card_id: recurringForm.payment_method === 'credit_card' ? (recurringForm.card_id || null) : null, ends_on: recurringForm.ends_on || null }
-    const { error } = await supabase.from('recurring_rules').insert(payload)
-    if (error) setMessage(error.message); else { setRecurringModal(false); await loadData() }
+    const result = editingRecurringId
+      ? await supabase.from('recurring_rules').update(payload).eq('id', editingRecurringId)
+      : await supabase.from('recurring_rules').insert(payload)
+    if (result.error) setMessage(result.error.message)
+    else { setRecurringModal(false); setEditingRecurringId(null); await loadData() }
   }
   async function toggleRecurring(rule) {
     const { error } = await supabase.from('recurring_rules').update({ active: !rule.active }).eq('id', rule.id)
@@ -270,8 +296,10 @@ export default function App() {
   }
   function deleteRecurring(rule) {
     requestConfirmation({ title: 'Excluir recorrência?', message: `Excluir a regra “${rule.description}”?`, details: 'Os lançamentos que já foram criados por essa regra serão mantidos.', confirmLabel: 'Excluir recorrência', onConfirm: async () => {
+      setRecurringRules((current) => current.filter((item) => item.id !== rule.id))
       const { error } = await supabase.from('recurring_rules').delete().eq('id', rule.id)
-      if (error) setMessage(error.message); else await loadData()
+      if (error) setMessage(error.message)
+      await loadData()
     } })
   }
 
@@ -422,10 +450,10 @@ export default function App() {
         {potBalances.length ? <section className="savings-pot-grid">{potBalances.map((pot) => { const progress = pot.goal_amount ? Math.min(100, pot.balance / Number(pot.goal_amount) * 100) : null; return <article className="panel savings-pot" key={pot.id}><div className="pot-title"><span className="pot-icon"><PiggyBank size={19}/></span><div><h2>{pot.name}</h2><span>{pot.goal_amount ? `Meta: ${brl(pot.goal_amount)}` : 'Sem meta definida'}</span></div><div className="row-actions"><button className="icon-button" title="Editar cofrinho" onClick={() => openEditPot(pot)}><Pencil size={15}/></button><button className="icon-button danger" title="Excluir cofrinho" onClick={() => deletePot(pot)}><Trash2 size={15}/></button></div></div><strong className="pot-balance">{brl(pot.balance)}</strong>{pot.goal_due_date && pot.goal_amount && <div className="goal-suggestion">{(() => { const remaining=Math.max(0,Number(pot.goal_amount)-pot.balance); const today=new Date(); const due=new Date(`${pot.goal_due_date}T12:00:00`); const months=Math.max(1,(due.getFullYear()-today.getFullYear())*12+due.getMonth()-today.getMonth()+1); return remaining===0?'Meta alcançada!':`Para chegar até ${fmtDate(pot.goal_due_date)}, guarde cerca de ${brl(remaining/months)} por mês.` })()}</div>}{progress !== null && <div className="pot-progress"><div><span>Progresso da meta</span><b>{Math.round(progress)}%</b></div><i><span style={{width:`${progress}%`}}/></i></div>}<div className="pot-actions"><button className="button subtle" onClick={() => openMovement(pot, 'deposit')}><ArrowDownLeft size={15}/> Guardar</button><button className="button subtle" onClick={() => openMovement(pot, 'withdrawal')}><ArrowUpRight size={15}/> Retirar</button></div></article> })}</section> : <section className="panel"><EmptyState title="Crie seu primeiro cofrinho" text="Pode ser sua reserva, uma viagem ou o saldo que quer manter guardado. Você informa o saldo inicial e registra entradas e retiradas." action={<button className="button primary" onClick={openNewPot}><Plus size={15}/> Criar cofrinho</button>}/></section>}
         <section className="panel entries-panel"><PanelHeading title="Movimentações do mês" subtitle={`Entradas e retiradas em ${monthName(selectedMonth)}`}/>{monthMovements.length ? <div className="table-wrap"><table className="entry-table"><thead><tr><th>Cofrinho</th><th>Tipo</th><th>Data</th><th>Observação</th><th className="align-right">Valor</th><th/></tr></thead><tbody>{[...monthMovements].sort((a,b)=>b.moved_on.localeCompare(a.moved_on)).map((item)=><tr key={item.id}><td>{pots.find(p=>p.id===item.pot_id)?.name || 'Cofrinho'}</td><td>{item.kind==='deposit'?'Guardado':'Retirado'}</td><td>{fmtDate(item.moved_on)}</td><td>{item.note || '—'}</td><td className={`align-right amount ${item.kind==='deposit'?'income-text':'withdrawal-text'}`}>{item.kind==='deposit'?'+':'−'} {brl(item.amount)}</td><td><button className="icon-button danger" title="Excluir movimentação" onClick={()=>deleteMovement(item)}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div> : <EmptyState title="Sem movimentações neste mês" text="As movimentações que você registrar nos cofrinhos aparecerão aqui."/>}</section>
       </> : activePage === 'categories' ? <>
-        <section className="panel categories-manager"><PanelHeading title="Categorias personalizadas" subtitle="Categorias removidas não apagam lançamentos antigos."/><form className="category-add" onSubmit={async(e)=>{e.preventDefault();const {error}=await supabase.from('user_categories').insert({kind:categoryForm.kind,name:categoryForm.name.trim()});if(error)setMessage(error.message);else{setCategoryForm({kind:'expense',name:''});await loadData()}}}><select value={categoryForm.kind} onChange={e=>setCategoryForm({...categoryForm,kind:e.target.value})}><option value="expense">Despesa</option><option value="income">Receita</option></select><input required maxLength="40" placeholder="Nome da categoria" value={categoryForm.name} onChange={e=>setCategoryForm({...categoryForm,name:e.target.value})}/><button className="button primary"><Plus size={15}/> Adicionar</button></form><div className="custom-category-list">{['expense','income'].map(kind=><div key={kind}><h3>{kind==='expense'?'Despesas':'Receitas'}</h3>{userCategories.filter(c=>c.kind===kind).length?userCategories.filter(c=>c.kind===kind).map(c=><div className="custom-category-row" key={c.id}><span>{c.name}</span><button className="icon-button danger" title="Excluir categoria" onClick={()=>requestConfirmation({title:'Excluir categoria?',message:`Excluir a categoria “${c.name}”?`,details:'Os lançamentos antigos que usam essa categoria serão mantidos.',confirmLabel:'Excluir categoria',onConfirm:async()=>{const {error}=await supabase.from('user_categories').delete().eq('id',c.id);if(error)setMessage(error.message);else await loadData()}})}><Trash2 size={15}/></button></div>):<p>Nenhuma categoria personalizada.</p>}</div>)}</div></section>
+        <section className="panel categories-manager"><PanelHeading title="Categorias personalizadas" subtitle="Categorias removidas não apagam lançamentos antigos."/><form className="category-add" onSubmit={async(e)=>{e.preventDefault();const {error}=await supabase.from('user_categories').insert({kind:categoryForm.kind,name:categoryForm.name.trim()});if(error)setMessage(error.message);else{setCategoryForm({kind:'expense',name:''});await loadData()}}}><select value={categoryForm.kind} onChange={e=>setCategoryForm({...categoryForm,kind:e.target.value})}><option value="expense">Despesa</option><option value="income">Receita</option></select><input required maxLength="40" placeholder="Nome da categoria" value={categoryForm.name} onChange={e=>setCategoryForm({...categoryForm,name:e.target.value})}/><button className="button primary"><Plus size={15}/> Adicionar</button></form><div className="custom-category-list">{['expense','income'].map(kind=><div key={kind}><h3>{kind==='expense'?'Despesas':'Receitas'}</h3>{userCategories.filter(c=>c.kind===kind).length?userCategories.filter(c=>c.kind===kind).map(c=><div className="custom-category-row" key={c.id}><span>{c.name}</span><button className="icon-button danger" title="Excluir categoria" onClick={()=>requestConfirmation({title:'Excluir categoria?',message:`Excluir a categoria “${c.name}”?`,details:'Os lançamentos antigos que usam essa categoria serão mantidos.',confirmLabel:'Excluir categoria',onConfirm:async()=>{setUserCategories(current=>current.filter(category=>category.id!==c.id));const {error}=await supabase.from('user_categories').delete().eq('id',c.id);if(error)setMessage(error.message);await loadData()}})}><Trash2 size={15}/></button></div>):<p>Nenhuma categoria personalizada.</p>}</div>)}</div></section>
       </> : <>
         <section className="panel recurring-intro"><Repeat size={20}/><div><b>Como funciona</b><span>As regras geram automaticamente uma conta ou receita pendente no mês selecionado. Ao trocar de mês, o sistema cria aquele mês uma única vez. Lançamentos já criados permanecem mesmo se você pausar ou excluir uma regra.</span></div></section>
-        {recurringRules.length ? <section className="recurring-grid">{recurringRules.map((rule) => <article className={`panel recurring-card ${!rule.active?'inactive':''}`} key={rule.id}><div className="recurring-card-head"><span className={`agenda-icon ${rule.kind}`}><Repeat size={16}/></span><span className={`status-pill ${rule.active?'settled':'pending'}`}>{rule.active?'Ativa':'Pausada'}</span></div><h2>{rule.description}</h2><strong>{brl(rule.amount)} <small>/ mês</small></strong><p>{rule.kind==='income'?'Receita':'Despesa'} · dia {rule.day_of_month} · {rule.category}{rule.ends_on?` · até ${fmtDate(rule.ends_on)}`:''}</p><div className="card-actions"><button className="button subtle" onClick={()=>toggleRecurring(rule)}>{rule.active?'Pausar':'Ativar'}</button><button className="icon-button danger" title="Excluir regra" onClick={()=>deleteRecurring(rule)}><Trash2 size={15}/></button></div></article>)}</section> : <section className="panel"><EmptyState title="Nenhuma recorrência cadastrada" text="Automatize aluguel, assinaturas, salário e outras contas ou receitas fixas." action={<button className="button primary" onClick={openNewRecurring}><Plus size={15}/> Criar recorrência</button>}/></section>}
+        {recurringRules.length ? <section className="recurring-grid">{recurringRules.map((rule) => <article className={`panel recurring-card ${!rule.active?'inactive':''}`} key={rule.id}><div className="recurring-card-head"><span className={`agenda-icon ${rule.kind}`}><Repeat size={16}/></span><span className={`status-pill ${rule.active?'settled':'pending'}`}>{rule.active?'Ativa':'Pausada'}</span></div><h2>{rule.description}</h2><strong>{brl(rule.amount)} <small>/ mês</small></strong><p>{rule.kind==='income'?'Receita':'Despesa'} · dia {rule.day_of_month} · {rule.category}{rule.ends_on?` · até ${fmtDate(rule.ends_on)}`:''}</p><div className="card-actions"><button className="button subtle" onClick={()=>openEditRecurring(rule)}><Pencil size={14}/> Editar</button><button className="button subtle" onClick={()=>toggleRecurring(rule)}>{rule.active?'Pausar':'Ativar'}</button><button className="icon-button danger" title="Excluir regra" onClick={()=>deleteRecurring(rule)}><Trash2 size={15}/></button></div></article>)}</section> : <section className="panel"><EmptyState title="Nenhuma recorrência cadastrada" text="Automatize aluguel, assinaturas, salário e outras contas ou receitas fixas." action={<button className="button primary" onClick={openNewRecurring}><Plus size={15}/> Criar recorrência</button>}/></section>}
       </>}
     </main>
 
@@ -437,7 +465,7 @@ export default function App() {
     {movementModal && <MovementModal value={movementForm} pots={pots} onChange={setMovementForm} onClose={() => setMovementModal(false)} onSubmit={saveMovement} />}
     {budgetModal && <BudgetModal value={budgetForm} categories={allExpenseCategories} onChange={setBudgetForm} onClose={() => setBudgetModal(false)} onSubmit={saveBudget} />}
     {reminderModal && <ReminderModal value={reminderSettings} onChange={setReminderSettings} onClose={() => setReminderModal(false)} onSubmit={async(e)=>{e.preventDefault();const {error}=await supabase.from('reminder_settings').upsert({...reminderSettings,updated_at:new Date().toISOString()},{onConflict:'user_id'});if(error)setMessage(error.message);else{setReminderModal(false);await loadData()}}} />}
-    {recurringModal && <RecurringModal value={recurringForm} cards={cards} customCategories={userCategories} onChange={setRecurringForm} onClose={() => setRecurringModal(false)} onSubmit={saveRecurring} />}
+    {recurringModal && <RecurringModal title={editingRecurringId ? 'Editar recorrência mensal' : 'Nova recorrência mensal'} submitLabel={editingRecurringId ? 'Salvar alterações' : 'Criar regra'} isEditing={Boolean(editingRecurringId)} value={recurringForm} cards={cards} customCategories={userCategories} onChange={setRecurringForm} onClose={() => { setRecurringModal(false); setEditingRecurringId(null) }} onSubmit={saveRecurring} />}
   </div>
 }
 
@@ -529,18 +557,19 @@ function EntryFilters({ value, onChange, categories }) {
   return <div className="entry-filters"><label className="search-field"><Search size={16}/><input placeholder="Buscar descrição" value={value.search} onChange={(event) => set('search', event.target.value)}/></label><label><SlidersHorizontal size={14}/><select value={value.kind} onChange={(event) => set('kind', event.target.value)}><option value="all">Todos os tipos</option><option value="expense">Despesas</option><option value="income">Receitas</option></select></label><label><select value={value.status} onChange={(event) => set('status', event.target.value)}><option value="all">Todas as situações</option><option value="pending">Pendentes</option><option value="settled">Pagas / recebidas</option></select></label><label><select value={value.category} onChange={(event) => set('category', event.target.value)}><option value="all">Todas as categorias</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label><select value={value.payment} onChange={(event) => set('payment', event.target.value)}><option value="all">Todas as formas</option><option value="pix">Pix</option><option value="cash">Dinheiro</option><option value="debit_card">Débito</option><option value="credit_card">Crédito</option><option value="other">Outro</option></select></label></div>
 }
 
-function RecurringModal({ value, cards, customCategories = [], onChange, onClose, onSubmit }) {
+function RecurringModal({ title, submitLabel, isEditing, value, cards, customCategories = [], onChange, onClose, onSubmit }) {
   const set = (key, next) => onChange({ ...value, [key]: next })
   const categories = [...(value.kind === 'income' ? incomeCategories : expenseCategories), ...customCategories.filter((item) => item.kind === value.kind).map((item) => item.name)]
-  return <Modal title="Nova recorrência mensal" onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
-    <label>Tipo<select value={value.kind} onChange={(event) => { const kind = event.target.value; onChange({ ...value, kind, category: kind === 'income' ? 'Salário' : 'Moradia', payment_method: kind === 'income' ? 'other' : 'pix', card_id: '' }) }}><option value="expense">Despesa / conta a pagar</option><option value="income">Receita / conta a receber</option></select></label>
+  return <Modal title={title} onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
+    <label>Tipo<select value={value.kind} onChange={(event) => { const kind = event.target.value; onChange({ ...value, kind, category: (kind === 'income' ? [...incomeCategories,...customCategories.filter(c=>c.kind==='income').map(c=>c.name)] : [...expenseCategories,...customCategories.filter(c=>c.kind==='expense').map(c=>c.name)])[0], payment_method: kind === 'income' ? 'other' : 'pix', card_id: '' }) }}><option value="expense">Despesa / conta a pagar</option><option value="income">Receita / conta a receber</option></select></label>
     <label>Descrição<input required maxLength="100" value={value.description} onChange={(event) => set('description', event.target.value)} placeholder="Ex.: aluguel"/></label>
     <div className="modal-form-two"><label>Valor mensal<input type="number" min="0.01" step="0.01" required value={value.amount} onChange={(event) => set('amount', event.target.value)}/></label><label>Categoria<select value={value.category} onChange={(event) => set('category', event.target.value)}>{categories.map((item)=><option key={item}>{item}</option>)}</select></label></div>
     <div className="modal-form-two"><label>Dia do mês<input type="number" min="1" max="31" required value={value.day_of_month} onChange={(event) => set('day_of_month', event.target.value)}/></label><label>Começa em<input type="month" required value={value.starts_on.slice(0,7)} onChange={(event) => set('starts_on', monthStart(event.target.value))}/></label></div>
+    {isEditing && <p className="modal-help">As alterações serão usadas nos próximos lançamentos gerados. Lançamentos que já existem permanecem como estão.</p>}
     <label>Último mês (opcional)<input type="month" value={value.ends_on?.slice(0,7) || ''} onChange={(event) => set('ends_on', event.target.value ? monthStart(event.target.value) : '')}/></label>
     {value.kind === 'expense' && <label>Forma de pagamento<select value={value.payment_method} onChange={(event) => set('payment_method', event.target.value)}><option value="pix">Pix</option><option value="cash">Dinheiro</option><option value="debit_card">Cartão de débito</option><option value="credit_card">Cartão de crédito</option><option value="other">Outro</option></select></label>}
     {value.kind === 'expense' && value.payment_method === 'credit_card' && <label>Cartão<select required value={value.card_id} onChange={(event) => set('card_id', event.target.value)}><option value="">Escolha o cartão</option>{cards.map((card)=><option key={card.id} value={card.id}>{card.name}</option>)}</select></label>}
-    <div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15}/> Criar regra</button></div>
+    <div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15}/> {submitLabel}</button></div>
   </form></Modal>
 }
 

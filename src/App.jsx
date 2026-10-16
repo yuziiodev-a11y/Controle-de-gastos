@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays,
   Check, ChevronDown, CreditCard, LayoutDashboard, LogOut, Pencil, Plus, PiggyBank,
-  ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff, ChartNoAxesCombined, Tags, Bell, FileUp, Download, Paperclip, History, Users,
+  ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff, ChartNoAxesCombined, Tags, Bell, Paperclip, History, Users,
 } from 'lucide-react'
 import { configured, supabase } from './lib/supabase'
 
@@ -92,61 +92,6 @@ function allocateShareAmounts(total, shares) {
   return shares.map((share, index) => ({ ...share, amount: cents[index] / 100 }))
 }
 
-function parseCsv(text) {
-  const delimiter = (text.split(/\r?\n/, 1)[0].match(/;/g) || []).length > (text.split(/\r?\n/, 1)[0].match(/,/g) || []).length ? ';' : ','
-  const rows = []; let row = []; let field = ''; let quoted = false
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i]
-    if (quoted && char === '"' && text[i + 1] === '"') { field += '"'; i += 1 }
-    else if (char === '"') quoted = !quoted
-    else if (!quoted && char === delimiter) { row.push(field.trim()); field = '' }
-    else if (!quoted && (char === '\n' || char === '\r')) { if (char === '\r' && text[i + 1] === '\n') i += 1; row.push(field.trim()); if (row.some(Boolean)) rows.push(row); row = []; field = '' }
-    else field += char
-  }
-  row.push(field.trim()); if (row.some(Boolean)) rows.push(row)
-  if (rows.length < 2) return { rows: [], error: 'O arquivo precisa ter cabeçalho e ao menos um lançamento.' }
-  const headers = rows[0].map((value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replaceAll(' ', '_'))
-  const required = ['tipo', 'descricao', 'valor', 'categoria', 'data']
-  const missing = required.filter((header) => !headers.includes(header))
-  if (missing.length) return { rows: [], error: `Colunas obrigatórias ausentes: ${missing.join(', ')}.` }
-  const dateValue = (value) => {
-    const v = value.trim()
-    let iso = /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : ''
-    const match = v.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
-    if (!iso && match) iso = `${match[3]}-${match[2]}-${match[1]}`
-    if (!iso) return ''
-    const parsed = new Date(`${iso}T12:00:00`)
-    return Number.isNaN(parsed.getTime()) || localDate(parsed) !== iso ? '' : iso
-  }
-  const result = rows.slice(1).map((cells, index) => {
-    const data = Object.fromEntries(headers.map((header, column) => [header, cells[column] || '']))
-    const errors = []
-    const kindValue = data.tipo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    const description = data.descricao.trim()
-    const category = data.categoria.trim() || 'Outros'
-    if (!description) errors.push('descrição obrigatória')
-    if (description.length > 100) errors.push('descrição excede 100 caracteres')
-    if (category.length > 40) errors.push('categoria excede 40 caracteres')
-    const kind = ['receita', 'income', 'entrada'].includes(kindValue) ? 'income' : ['despesa', 'expense', 'saida'].includes(kindValue) ? 'expense' : ''
-    if (!kind) errors.push('tipo inválido')
-    const amountString = data.valor.replace(/\s/g, '').replace(/\.(?=\d{3}(?:\D|$))/g, '').replace(',', '.')
-    const amount = Number(amountString)
-    if (!Number.isFinite(amount) || amount <= 0) errors.push('valor inválido')
-    const spentOn = dateValue(data.data)
-    if (!spentOn) errors.push('data inválida (use AAAA-MM-DD ou DD/MM/AAAA)')
-    const dueDate = data.vencimento ? dateValue(data.vencimento) : spentOn
-    if (!dueDate) errors.push('vencimento inválido (use AAAA-MM-DD ou DD/MM/AAAA)')
-    const statusValue = (data.situacao || 'pendente').toLowerCase()
-    const status = ['paga', 'pago', 'recebida', 'recebido', 'settled'].includes(statusValue) ? 'settled' : ['pendente', 'pending'].includes(statusValue) ? 'pending' : ''
-    if (!status) errors.push('situação inválida')
-    const methodValue = (data.forma_pagamento || 'outro').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    const paymentMethod = ({ pix: 'pix', dinheiro: 'cash', cash: 'cash', debito: 'debit_card', debit_card: 'debit_card', credito: 'credit_card', credit_card: 'credit_card', outro: 'other', other: 'other' })[methodValue]
-    if (kind === 'expense' && !paymentMethod) errors.push('forma_pagamento inválida')
-    return { line: index + 2, error: errors.join('; '), raw: data, value: { kind, description, amount, category, spent_on: spentOn, due_date: dueDate, settled_on: status === 'settled' ? (dateValue(data.pago_em) || spentOn) : null, status, payment_method: kind === 'expense' ? paymentMethod : 'other', card_name: data.cartao.trim(), invoice_month: monthStart((data.mes_fatura && dateValue(data.mes_fatura + '-01')) ? data.mes_fatura : spentOn.slice(0, 7)), paid_by: data.pagador.trim(), shared_with: (data.dividido_com || '').split(/[|;]/).map((name) => name.trim()).filter(Boolean), notes: data.observacoes.trim() } }
-  })
-  return { rows: result, error: '' }
-}
-
 export default function App() {
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -171,10 +116,6 @@ export default function App() {
   const [historyAction, setHistoryAction] = useState('all')
   const [shareModal, setShareModal] = useState(null)
   const [attachmentModal, setAttachmentModal] = useState(null)
-  const [csvModal, setCsvModal] = useState(false)
-  const [csvRows, setCsvRows] = useState([])
-  const [csvError, setCsvError] = useState('')
-  const [csvBusy, setCsvBusy] = useState(false)
   const [monthClosure, setMonthClosure] = useState(null)
   const [cards, setCards] = useState([])
   const [pots, setPots] = useState([])
@@ -187,6 +128,7 @@ export default function App() {
   const [cashflowDayDate, setCashflowDayDate] = useState(null)
   const [cashflowConfirmAll, setCashflowConfirmAll] = useState(false)
   const [cashflowBulkBusy, setCashflowBulkBusy] = useState(false)
+  const [monthTab, setMonthTab] = useState('overview')
   const [invoiceCardFilter, setInvoiceCardFilter] = useState('all')
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('all')
   const [userCategories, setUserCategories] = useState([])
@@ -293,21 +235,25 @@ export default function App() {
     const nextName = profileName.trim()
     if (nextName.length < 2) { setMessage('O nome de usuário precisa ter pelo menos 2 caracteres.'); return }
     const oldAutoName = session.user.user_metadata?.full_name || session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'Eu'
+    const previousDisplayNames = new Set([oldAutoName, userDisplayName(session.user)])
     const { data, error } = await supabase.auth.updateUser({ data: { full_name: nextName } })
     if (error) { setMessage(error.message); return }
     if (data.user) setSession((current) => current ? { ...current, user: data.user } : current)
     const changedGroups = new Set()
     let syncError = null
     for (const item of entries) {
-      if (item.kind !== 'expense' || item.responsible_person !== oldAutoName || item.responsible_person === nextName) continue
-      const details = responsibleDetailsFor(item, oldAutoName).map((person) => ({ ...person, name: person.name === oldAutoName ? nextName : person.name }))
+      if (item.kind !== 'expense') continue
+      const currentDetails = responsibleDetailsFor(item, userDisplayName(session.user))
+      if (!currentDetails.some((person) => previousDisplayNames.has(person.name)) || currentDetails.every((person) => person.name === nextName)) continue
+      const details = currentDetails.map((person) => ({ ...person, name: previousDisplayNames.has(person.name) ? nextName : person.name }))
+      const responsiblePerson = details.map((person) => person.name).join(', ')
       if (item.installment_group_id) {
         if (changedGroups.has(item.installment_group_id)) continue
         changedGroups.add(item.installment_group_id)
-        const { error: updateError } = await supabase.from('expenses').update({ responsible_person: nextName, responsible_details: details }).eq('installment_group_id', item.installment_group_id)
+        const { error: updateError } = await supabase.from('expenses').update({ responsible_person: responsiblePerson, responsible_details: details }).eq('installment_group_id', item.installment_group_id)
         if (updateError) { syncError = updateError; break }
       } else {
-        const { error: updateError } = await supabase.from('expenses').update({ responsible_person: nextName, responsible_details: details }).eq('id', item.id)
+        const { error: updateError } = await supabase.from('expenses').update({ responsible_person: responsiblePerson, responsible_details: details }).eq('id', item.id)
         if (updateError) { syncError = updateError; break }
       }
     }
@@ -328,6 +274,17 @@ export default function App() {
     setMovementModal(false)
     setBudgetModal(false)
     setRecurringModal(false)
+    setGlobalSearchOpen(false)
+    setGlobalSearchQuery('')
+    setHistoryModal(null)
+    setHistoryRows([])
+    setShareModal(null)
+    setAttachmentModal(null)
+    setInvoiceConfirm(null)
+    setConfirmation(null)
+    setExpandedResponsibleDetails(null)
+    setCashflowDayDate(null)
+    setCashflowConfirmAll(false)
     setEntries([])
     setCards([])
     setPots([])
@@ -480,45 +437,6 @@ export default function App() {
     if (error) { tab?.close(); setMessage(error.message) }
     else if (tab) tab.location.href = data.signedUrl
     else setMessage('O navegador bloqueou a nova aba. Permita pop-ups para abrir o comprovante.')
-  }
-
-  async function importCsvFile(file) {
-    setCsvError(''); setCsvRows([])
-    if (!file.name.toLocaleLowerCase('pt-BR').endsWith('.csv')) { setCsvError('Escolha um arquivo com extensão .csv.'); return }
-    if (file.size > 2 * 1024 * 1024) { setCsvError('O arquivo deve ter no máximo 2 MB.'); return }
-    try {
-      const parsed = parseCsv(await file.text())
-      if (parsed.error) setCsvError(parsed.error)
-      else setCsvRows(parsed.rows)
-    } catch (error) { setCsvError(`Não foi possível ler o arquivo: ${error.message}`) }
-  }
-
-  async function importCsvRows() {
-    const valid = csvRows.filter((row) => !row.error)
-    if (!valid.length) { setCsvError('Não há linhas válidas para importar.'); return }
-    if (valid.length > 500) { setCsvError('Importe até 500 lançamentos por arquivo.'); return }
-    const prepared = valid.map(({ value, line }) => {
-      const card = value.card_name ? cards.find((item) => item.name.trim().toLocaleLowerCase('pt-BR') === value.card_name.toLocaleLowerCase('pt-BR')) : null
-      if (value.card_name && value.payment_method !== 'credit_card') return { line, error: 'a coluna cartao só pode ser usada com forma_pagamento=credito' }
-      if (value.card_name && !card) return { line, error: `cartão “${value.card_name}” não encontrado` }
-      if (value.payment_method === 'credit_card' && !card) return { line, error: 'informe um cartão existente na coluna cartao para pagamento em crédito' }
-      const { card_name, ...record } = value
-      const defaultResponsible = value.kind === 'expense' ? userDisplayName(session.user) : null
-      return { value: { ...record, paid_by: value.kind === 'expense' ? (value.paid_by || null) : null, responsible_person: defaultResponsible, responsible_details: defaultResponsible ? [{ name: defaultResponsible, percentage: 100 }] : [], shared_with: value.kind === 'expense' ? value.shared_with : [], card_id: value.payment_method === 'credit_card' ? card.id : null, invoice_month: value.payment_method === 'credit_card' ? value.invoice_month : monthStart(value.spent_on.slice(0, 7)) } }
-    })
-    const invalid = prepared.filter((row) => row.error)
-    if (invalid.length) { setCsvError(invalid.slice(0, 5).map((row) => `Linha ${row.line}: ${row.error}`).join(' · ')); return }
-    setCsvBusy(true)
-    const { error } = await supabase.from('expenses').insert(prepared.map(({ value }) => value))
-    setCsvBusy(false)
-    if (error) setCsvError(`Importação não concluída: ${error.message}`)
-    else { setCsvModal(false); setCsvRows([]); setCsvError(''); setMessage(`${valid.length} lançamento${valid.length === 1 ? '' : 's'} importado${valid.length === 1 ? '' : 's'}.`); await loadData() }
-  }
-
-  function downloadCsvTemplate() {
-    const content = 'tipo;descricao;valor;categoria;data;vencimento;situacao;forma_pagamento;cartao;mes_fatura;pagador;dividido_com;observacoes\ndespesa;Aluguel;1500,00;Moradia;2026-10-05;2026-10-10;pendente;pix;;;David;David|Amigo;Aluguel dividido\nreceita;Salário;4500,00;Salário;2026-10-01;2026-10-01;recebida;outro;;;;;'
-    const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }))
-    const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'modelo-lancamentos.csv'; anchor.click(); URL.revokeObjectURL(url)
   }
 
   async function closeSelectedMonth() {
@@ -849,7 +767,7 @@ export default function App() {
   function openGlobalSearchResult(item) {
     const relevantDate = item.card_id ? (item.invoice_month || item.spent_on) : (item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on))
     setGlobalSearchOpen(false); setGlobalSearchQuery(''); setEntryFilters({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all', responsible: 'all' })
-    setSelectedMonth(relevantDate.slice(0, 7)); setActivePage(item.card_id ? 'cards' : 'month'); setHighlightedEntryId(item.id)
+    setSelectedMonth(relevantDate.slice(0, 7)); setActivePage(item.card_id ? 'cards' : 'month'); if (!item.card_id) setMonthTab('entries'); setHighlightedEntryId(item.id)
   }
 
   if (loading) return <main className="center-screen">Carregando…</main>
@@ -862,7 +780,7 @@ export default function App() {
     <aside className="sidebar" aria-label="Navegação principal">
       <div className="brand"><span className="brand-mark"><Wallet size={19} /></span><span>meu<span className="brand-light">controle</span></span></div>
       <div className="sidebar-group-label">SEU DINHEIRO</div>
-      <button className={`nav-item ${activePage === 'month' ? 'active' : ''}`} aria-current={activePage === 'month' ? 'page' : undefined} onClick={() => setActivePage('month')}><LayoutDashboard size={17} /> Visão mensal</button>
+      <button className={`nav-item ${activePage === 'month' ? 'active' : ''}`} aria-current={activePage === 'month' ? 'page' : undefined} onClick={() => { setMonthTab('overview'); setActivePage('month') }}><LayoutDashboard size={17} /> Visão mensal</button>
       <button className={`nav-item ${activePage === 'year' ? 'active' : ''}`} aria-current={activePage === 'year' ? 'page' : undefined} onClick={() => setActivePage('year')}><ChartNoAxesCombined size={17} /> Visão anual</button>
       <button className={`nav-item ${activePage === 'categories' ? 'active' : ''}`} aria-current={activePage === 'categories' ? 'page' : undefined} onClick={() => setActivePage('categories')}><Tags size={17} /> Categorias</button>
       <button className={`nav-item ${activePage === 'cards' ? 'active' : ''}`} aria-current={activePage === 'cards' ? 'page' : undefined} onClick={() => setActivePage('cards')}><CreditCard size={17} /> Cartões e faturas</button>
@@ -888,7 +806,6 @@ export default function App() {
             {activePage === 'cards' && <button className="button primary" onClick={openNewCard}><Plus size={17} /> Novo cartão</button>}
             {activePage === 'savings' && <button className="button primary" onClick={openNewPot}><Plus size={17} /> Novo cofrinho</button>}
             {activePage === 'recurring' && <button className="button primary" onClick={openNewRecurring}><Plus size={17} /> Nova recorrência</button>}
-            {activePage === 'categories' && <button className="button primary" onClick={() => setCategoryForm({ kind: 'expense', name: '' })}><Plus size={17} /> Nova categoria</button>}
           </div>
         </div>
       </header>
@@ -896,6 +813,8 @@ export default function App() {
       {message && <div className="notice" role="status" aria-live="polite">{message}<button onClick={() => setMessage('')}><X size={15} /></button></div>}
 
       {activePage === 'month' ? <>
+        <nav className="month-tabs" role="tablist" aria-label="Seções da visão mensal">{[{ id: 'overview', label: 'Resumo' }, { id: 'entries', label: 'Lançamentos', count: sortedMonthEntries.length }, { id: 'planning', label: 'Planejamento' }, { id: 'history', label: 'Histórico' }].map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={monthTab === tab.id} className={monthTab === tab.id ? 'active' : ''} onClick={() => { setMonthTab(tab.id); window.scrollTo({ top: 0, behavior: 'smooth' }) }}>{tab.label}{tab.count != null && <small>{tab.count}</small>}</button>)}</nav>
+        {monthTab === 'overview' && <div className="month-tab-view" role="tabpanel" aria-label="Resumo mensal">
         <section className="panel reminder-strip" aria-labelledby="due-alert-title"><div><Bell size={18}/><span><b id="due-alert-title">Alertas de vencimento</b><small>{overdueEntries.length ? `${overdueEntries.length} conta${overdueEntries.length === 1 ? '' : 's'} atrasada${overdueEntries.length === 1 ? '' : 's'}. ` : ''}{dueInSevenDays.length ? `${dueInSevenDays.length} vencem nos próximos ${reminderDays} dias.` : `Nenhuma conta vence nos próximos ${reminderDays} dias.`} Os avisos aparecem aqui quando você abre o sistema.</small></span></div><button className="button subtle" onClick={()=>setReminderModal(true)}>{reminderSettings.enabled?'Configurar':'Configurar avisos'}</button>{(overdueEntries.length || dueInSevenDays.length) ? <div className="due-alert-list">{[...overdueEntries, ...dueInSevenDays].slice(0,4).map(item=><div className="due-alert-item" key={item.id}><span className={item.due_date < todayKey ? 'overdue-label' : ''}>{item.due_date < todayKey ? 'Atrasada' : `Vence ${fmtDate(item.due_date)}`}</span><b>{item.description}</b><strong>{brl(item.amount)}</strong><button className="button subtle" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} onClick={()=>settleEntry(item)}>{item.kind === 'income' ? 'Recebi' : 'Paguei'}</button></div>)}</div> : null}</section>
         <section className="month-hero">
           <div className="hero-copy"><span className="hero-kicker">RESULTADO PREVISTO DE {monthName(selectedMonth).toLocaleUpperCase('pt-BR')}</span><strong className={monthResult < 0 ? 'negative' : ''}>{brl(monthResult)}</strong><span className="hero-caption">Entradas previstas menos saídas previstas no mês</span></div>
@@ -910,13 +829,17 @@ export default function App() {
           <SummaryCard label="Despesas realizadas" value={brl(monthEntries.filter((item) => item.kind === 'expense' && item.status === 'settled').reduce((sum, item) => sum + Number(item.amount), 0))} detail="Pagas ou registradas" icon={<ReceiptText size={17} />} tone="blue" />
           <SummaryCard label="Receitas recebidas" value={brl(monthEntries.filter((item) => item.kind === 'income' && item.status === 'settled').reduce((sum, item) => sum + Number(item.amount), 0))} detail="Recebidas neste mês" icon={<Banknote size={17} />} tone="purple" />
         </section>
+        </div>}
 
+        {monthTab === 'planning' && <div className="month-tab-view" role="tabpanel" aria-label="Planejamento mensal">
         <section className="dashboard-grid planning-grid">
           <article className="panel"><PanelHeading title="Orçamento por categoria" subtitle={`Limites de ${monthName(selectedMonth)}`} action={<button className="button subtle" onClick={() => { setBudgetForm({ category: 'Alimentação', amount: '' }); setBudgetModal(true) }}><Plus size={14}/> Definir limite</button>}/>
             {monthBudgetUsage.length ? <div className="budget-list">{monthBudgetUsage.map((item) => { const pct = Math.min(100, item.spent / Number(item.amount) * 100); return <div className="budget-row" key={item.id}><div><b>{item.category}</b><span>{brl(item.spent)} de {brl(item.amount)}</span><button className="icon-button danger" aria-label={`Remover limite de ${item.category}`} title="Remover limite" onClick={() => deleteBudget(item)}><X size={14}/></button></div><i className={pct >= 100 ? 'over' : pct >= 80 ? 'near' : ''}><span style={{ width: `${pct}%` }}/></i><small>{item.spent >= Number(item.amount) ? `Ultrapassou em ${brl(item.spent - Number(item.amount))}` : `Restam ${brl(Number(item.amount) - item.spent)}`}</small></div> })}</div> : <EmptyState title="Sem limites definidos" text="Defina um teto mensal por categoria para comparar o planejado com o gasto registrado." action={<button className="button subtle" onClick={() => { setBudgetForm({ category: 'Alimentação', amount: '' }); setBudgetModal(true) }}><Target size={14}/> Criar primeiro limite</button>}/>}</article>
           <article className="panel"><PanelHeading title="Últimos 6 meses" subtitle="Entradas e despesas por mês"/><div className="compare-chart">{priorMonths.map((item) => { const max = Math.max(...priorMonths.flatMap((month) => [month.income, month.expenses]), 1); return <div className="compare-month" key={item.key}><div className="compare-bars"><i className="income-bar" title={`Entradas ${brl(item.income)}`} style={{height:`${Math.max(item.income ? 4 : 0, item.income / max * 100)}%`}}/><i className="expense-bar" title={`Despesas ${brl(item.expenses)}`} style={{height:`${Math.max(item.expenses ? 4 : 0, item.expenses / max * 100)}%`}}/></div><span>{monthName(item.key,{month:'short'}).replace('.','')}</span><small>{brl(item.income-item.expenses)}</small></div> })}</div><div className="compare-legend"><span><i className="income-bar"/> Entradas</span><span><i className="expense-bar"/> Despesas</span></div></article>
         </section>
+        </div>}
 
+        {monthTab === 'overview' && <div className="month-tab-view" role="tabpanel" aria-label="Resumo mensal: fluxo de caixa">
         <section className="panel cashflow-panel" aria-label="Fluxo de caixa do mês">
           <PanelHeading title="Fluxo de caixa do mês" subtitle="Variação acumulada das entradas e saídas registradas, por data." action={<span className="count-pill">{cashflowRows.length} dias com lançamentos</span>} />
           {cashflowRows.length ? <div className="cashflow-table-wrap"><table className="cashflow-table"><thead><tr><th scope="col">Data</th><th scope="col">Entradas</th><th scope="col">Saídas</th><th scope="col">Variação do dia</th><th scope="col">Acumulado no mês</th><th scope="col">Lançamentos</th></tr></thead><tbody>{cashflowRows.map(row=><tr key={row.date}><th scope="row">{fmtDate(row.date)}</th><td className="income-text">{row.income ? `+ ${brl(row.income)}` : '—'}</td><td>{row.expenses ? `− ${brl(row.expenses)}` : '—'}</td><td className={row.net >= 0 ? 'income-text' : 'withdrawal-text'}>{row.net >= 0 ? '+' : '−'} {brl(Math.abs(row.net))}</td><td className={row.running >= 0 ? 'income-text' : 'withdrawal-text'}>{brl(row.running)}</td><td><button type="button" className="cashflow-open-day" onClick={() => { setCashflowDayDate(row.date); setCashflowConfirmAll(false) }}><ReceiptText size={14}/><span>Ver lançamentos</span><small>{row.entries.length}</small></button></td></tr>)}</tbody></table></div> : <EmptyState title="Sem movimentações previstas" text="Adicione contas ou receitas para acompanhar a evolução do saldo neste mês." action={<button className="button subtle" onClick={openNewEntry}><Plus size={15}/> Registrar lançamento</button>} />}
@@ -933,21 +856,28 @@ export default function App() {
             {pendingPayables.length + pendingReceivables.length ? <div className="agenda-list">{[...pendingPayables, ...pendingReceivables].sort((a, b) => a.due_date.localeCompare(b.due_date)).slice(0, 6).map((item) => <div className="agenda-row" key={item.id}><div className={`agenda-icon ${item.kind}`}><CalendarDays size={16} /></div><div className="agenda-description"><b>{item.description}</b><span>{item.kind === 'income' ? 'A receber' : 'A pagar'} · vence {fmtDate(item.due_date)}</span></div><strong className={item.kind === 'income' ? 'income-text' : ''}>{item.kind === 'income' ? '+' : '−'}{brl(item.amount)}</strong><button className="icon-button settle-icon" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} title={item.kind === 'income' ? 'Marcar como recebido' : 'Marcar como pago'} onClick={() => settleEntry(item)}><Check size={16} /></button></div>)}</div> : <EmptyState title="Tudo em dia por aqui" text="Não há contas pendentes para este mês." action={<button className="button subtle" onClick={openNewEntry}><Plus size={15} /> Registrar conta</button>} />}
           </article>
         </section>
+        </div>}
 
+        {monthTab === 'planning' && <div className="month-tab-view" role="tabpanel" aria-label="Fechamento mensal">
         <section className="panel month-close-panel"><PanelHeading title="Fechamento do mês" subtitle={monthClosure ? `Fechado em ${new Date(monthClosure.closed_at).toLocaleString('pt-BR')}` : 'Compare o orçamento com o realizado e salve um retrato deste mês.'} action={<button className="button primary" onClick={() => requestConfirmation({ title: monthClosure ? 'Atualizar fechamento?' : 'Fechar este mês?', message: `Salvar o comparativo de ${monthName(selectedMonth)}?`, details: 'O fechamento registra os totais e limites atuais. Você pode atualizar o retrato depois se editar lançamentos.', confirmLabel: monthClosure ? 'Atualizar fechamento' : 'Fechar mês', onConfirm: closeSelectedMonth })}><Check size={15}/>{monthClosure ? 'Atualizar fechamento' : 'Fechar mês'}</button>}/><div className="close-summary-grid"><div><span>Orçamento planejado</span><strong>{brl(displayedMonthSnapshot.planned_expenses)}</strong></div><div><span>Despesas realizadas</span><strong>{brl(displayedMonthSnapshot.actual_expenses)}</strong></div><div><span>Diferença</span><strong className={Number(displayedMonthSnapshot.planned_expenses)-Number(displayedMonthSnapshot.actual_expenses) < 0 ? 'withdrawal-text' : 'income-text'}>{brl(Number(displayedMonthSnapshot.planned_expenses)-Number(displayedMonthSnapshot.actual_expenses))}</strong></div><div><span>Resultado do mês</span><strong>{brl(displayedMonthSnapshot.net_result)}</strong></div></div>{displayedMonthSnapshot.categories?.length ? <div className="table-wrap"><table className="entry-table close-table"><thead><tr><th>Categoria</th><th className="align-right">Previsto</th><th className="align-right">Realizado</th><th className="align-right">Saldo do limite</th></tr></thead><tbody>{displayedMonthSnapshot.categories.map((item)=><tr key={item.category}><th scope="row">{item.category}</th><td className="align-right">{brl(item.planned)}</td><td className="align-right">{brl(item.actual)}</td><td className={`align-right ${Number(item.difference) < 0 ? 'withdrawal-text' : 'income-text'}`}>{brl(item.difference)}</td></tr>)}</tbody></table></div> : <p className="modal-help">Defina limites por categoria para incluir metas detalhadas no fechamento. O total de despesas e receitas já está sendo acompanhado.</p>}</section>
+        </div>}
 
+        {monthTab === 'history' && <div className="month-tab-view" role="tabpanel" aria-label="Histórico mensal">
         <section className="panel history-panel"><PanelHeading title="Histórico recente" subtitle="Últimas criações, edições, pagamentos e exclusões" action={<span className="count-pill">{visibleHistory.length} eventos</span>}/><div className="history-filters"><label><Search size={15}/><input aria-label="Buscar no histórico" placeholder="Buscar descrição" value={historySearch} onChange={event=>setHistorySearch(event.target.value)}/></label><label><SlidersHorizontal size={14}/><select aria-label="Filtrar ação do histórico" value={historyAction} onChange={event=>setHistoryAction(event.target.value)}><option value="all">Todas as ações</option><option value="created">Criados</option><option value="updated">Editados</option><option value="settled">Pagos / recebidos</option><option value="deleted">Excluídos</option></select></label></div>{visibleHistory.length ? <div className="recent-history-list">{visibleHistory.slice(0,8).map((row)=><div className="recent-history-row" key={row.id}><span className={`history-dot ${row.action}`}/><div><b>{row.description}</b><small>{{created:'criado',updated:'editado',settled:'pago/recebido',deleted:'excluído'}[row.action] || row.action} · {new Date(row.changed_at).toLocaleString('pt-BR')}</small></div><strong>{brl((row.new_data || row.old_data)?.amount)}</strong>{entries.some((entry) => entry.id === row.expense_id) && <button className="button subtle" onClick={() => openHistory(entries.find((entry) => entry.id === row.expense_id))}>Detalhes</button>}</div>)}</div> : <p className="modal-help">{recentHistory.length ? 'Nenhum evento corresponde a esta busca.' : 'As alterações de lançamentos aparecerão aqui, inclusive os registros que forem removidos.'}</p>}</section>
+        </div>}
 
+        {monthTab === 'entries' && <div className="month-tab-view" role="tabpanel" aria-label="Lançamentos do mês">
         <section className="panel entries-panel">
           <PanelHeading title="Lançamentos do mês" subtitle={`${filteredMonthEntries.length} de ${sortedMonthEntries.length} registros em ${monthName(selectedMonth)}`} action={<button className="button subtle" onClick={openNewEntry}><Plus size={15} /> Adicionar</button>} />
           <EntryFilters value={entryFilters} onChange={setEntryFilters} categories={allCategories} responsibleOptions={responsibleOptions} />
           {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} highlightedEntryId={highlightedEntryId} attachments={attachments} defaultResponsible={userDisplayName(session.user)} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
         </section>
+        </div>}
       </> : activePage === 'year' ? <>
-        {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
+        {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setMonthTab('overview');setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
       </> : activePage === 'responsible' ? <>
         <section className="responsible-page-intro"><div className="responsible-intro-copy"><span className="eyebrow">RESUMO DO MÊS</span><h2>Pagamentos por pessoa</h2><p>Valores pendentes nas faturas de <b>{monthName(selectedMonth)}</b>, distribuídos pelos responsáveis de cada compra.</p></div><div className="responsible-intro-total"><span>Total pendente</span><strong>{brl(responsibleMonthlyPaymentList.reduce((sum, person) => sum + person.total, 0))}</strong><small>{responsibleMonthlyPaymentList.length} responsável(is) com valores neste mês</small></div></section>
-        <section className="panel responsible-month-summary"><PanelHeading title="Quanto cada pessoa precisa pagar" subtitle="Os valores consideram somente compras de cartão ainda pendentes e respeitam o percentual de responsabilidade definido em cada lançamento." />{responsibleMonthlyPaymentList.length ? <div className="responsible-month-grid">{responsibleMonthlyPaymentList.map((person, personIndex) => { const itemCount = Object.values(person.cards).reduce((sum, card) => sum + card.entries.length, 0); const monthTotal = responsibleMonthlyPaymentList.reduce((sum, item) => sum + item.total, 0); const sharePercent = monthTotal ? person.total / monthTotal * 100 : 0; return <article className="responsible-month-person" key={person.name}><div className="responsible-month-person-head"><span className="responsible-person-avatar" aria-hidden="true">{person.name.trim().charAt(0).toLocaleUpperCase('pt-BR')}</span><span className="responsible-person-name"><b>{person.name}</b><small>{itemCount} compra(s) pendente(s) neste mês</small></span><strong>{brl(person.total)}</strong></div><div className="responsible-person-share"><div><span>Participação no total</span><b>{sharePercent.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</b></div><span className="responsible-person-share-track"><i style={{ width: `${sharePercent}%` }} /></span></div><div className="responsible-month-card-breakdown">{Object.values(person.cards).sort((a,b)=>b.total-a.total).map((card) => <div key={card.name}><span>{card.name}</span><b>{brl(card.total)}</b></div>)}</div><div className="responsible-details"><button type="button" className="responsible-details-toggle" onClick={() => setExpandedResponsibleDetails(person)}><span>Ver compras e parcelas</span><small>{itemCount}</small><ChevronDown size={14} aria-hidden="true" /></button></div></article>})}</div> : <EmptyState title="Nenhum valor pendente por responsável" text={`Não há compras de cartão em aberto nas faturas de ${monthName(selectedMonth)}.`} />}</section>
+        <section className="panel responsible-month-summary"><PanelHeading title="Quanto cada pessoa precisa pagar" subtitle="Os valores consideram somente compras de cartão ainda pendentes e respeitam o percentual de responsabilidade definido em cada lançamento." />{responsibleMonthlyPaymentList.length ? <div className="responsible-month-grid">{responsibleMonthlyPaymentList.map((person) => { const itemCount = Object.values(person.cards).reduce((sum, card) => sum + card.entries.length, 0); const monthTotal = responsibleMonthlyPaymentList.reduce((sum, item) => sum + item.total, 0); const sharePercent = monthTotal ? person.total / monthTotal * 100 : 0; return <article className="responsible-month-person" key={person.name}><div className="responsible-month-person-head"><span className="responsible-person-avatar" aria-hidden="true">{person.name.trim().charAt(0).toLocaleUpperCase('pt-BR')}</span><span className="responsible-person-name"><b>{person.name}</b><small>{itemCount} compra(s) pendente(s) neste mês</small></span><strong>{brl(person.total)}</strong></div><div className="responsible-person-share"><div><span>Participação no total</span><b>{sharePercent.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</b></div><span className="responsible-person-share-track"><i style={{ width: `${sharePercent}%` }} /></span></div><div className="responsible-month-card-breakdown">{Object.values(person.cards).sort((a,b)=>b.total-a.total).map((card) => <div key={card.name}><span>{card.name}</span><b>{brl(card.total)}</b></div>)}</div><div className="responsible-details"><button type="button" className="responsible-details-toggle" onClick={() => setExpandedResponsibleDetails(person)}><span>Ver compras e parcelas</span><small>{itemCount}</small><ChevronDown size={14} aria-hidden="true" /></button></div></article>})}</div> : <EmptyState title="Nenhum valor pendente por responsável" text={`Não há compras de cartão em aberto nas faturas de ${monthName(selectedMonth)}.`} />}</section>
       </> : activePage === 'cards' ? <>
         <section className="card-intro"><div><span className="eyebrow">ACOMPANHAMENTO DE FATURAS</span><h2>Faturas de {monthName(selectedMonth)}</h2><p>Filtre por cartão, mês e situação para encontrar uma fatura.</p></div><div className="card-intro-total"><span>Total nas faturas filtradas</span><strong>{brl(filteredMonthCards.reduce((sum, item) => sum + item.invoiceTotal, 0))}</strong></div></section>
         <section className="panel invoice-filter-bar" aria-label="Filtros de faturas"><label>Cartão<select aria-label="Filtrar por cartão" value={invoiceCardFilter} onChange={(event) => setInvoiceCardFilter(event.target.value)}><option value="all">Todos os cartões</option>{cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label><label>Mês<input aria-label="Filtrar faturas por mês" type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} /></label><label>Situação<select aria-label="Filtrar por situação da fatura" value={invoiceStatusFilter} onChange={(event) => setInvoiceStatusFilter(event.target.value)}><option value="all">Todas</option><option value="open">Em aberto</option><option value="paid">Pagas</option></select></label></section>
@@ -974,7 +904,6 @@ export default function App() {
     {expandedResponsibleDetails && <Modal title={`Compras e parcelas de ${expandedResponsibleDetails.name}`} onClose={() => setExpandedResponsibleDetails(null)} className="responsible-purchases-modal"><div className="responsible-purchases-modal-content"><p>Compras de cartão pendentes em <b>{monthName(selectedMonth)}</b>, separadas por cartão.</p><div className="responsible-purchases-modal-list">{Object.values(expandedResponsibleDetails.cards).sort((a, b) => b.total - a.total).map((card) => <section className="responsible-purchases-modal-card" key={card.name}><header><b>{card.name}</b><strong>{brl(card.total)}</strong></header>{card.entries.slice().sort((a, b) => a.due_date.localeCompare(b.due_date)).map((entry) => <div className="responsible-purchase-modal-row" key={entry.id}><span>{entry.description}{entry.installment_number ? ` · parcela ${entry.installment_number}/${entry.installment_count}` : ''}<small>Vence {fmtDate(entry.due_date)}</small></span><b>{brl(entry.responsibilityAmount)}</b></div>)}</section>)}</div><footer><span>Total atribuído a {expandedResponsibleDetails.name}</span><strong>{brl(expandedResponsibleDetails.total)}</strong></footer></div></Modal>}
     {profileModal && <ProfileModal value={profileName} onChange={setProfileName} onClose={() => setProfileModal(false)} onSubmit={saveProfileName} /> }
     {entryModal && <EntryModal title={editingEntryId ? 'Editar lançamento' : 'Novo lançamento'} value={entryForm} cards={cards} customCategories={userCategories} onChange={setEntryForm} onClose={() => setEntryModal(false)} onSubmit={saveEntry} />}
-    {csvModal && <CsvImportModal rows={csvRows} error={csvError} busy={csvBusy} onFile={importCsvFile} onTemplate={downloadCsvTemplate} onImport={importCsvRows} onClose={() => setCsvModal(false)} />}
     {historyModal && <HistoryModal item={historyModal} rows={historyRows} onClose={() => setHistoryModal(null)} />}
     {globalSearchOpen && <GlobalSearchModal query={globalSearchQuery} onQueryChange={setGlobalSearchQuery} results={globalSearchResults} onSelect={openGlobalSearchResult} onClose={() => setGlobalSearchOpen(false)} />}
     {shareModal && <ShareSettlementModal item={shareModal} onSettle={saveShareSettlement} onClose={() => setShareModal(null)} />}
@@ -1100,11 +1029,6 @@ function EntryFilters({ value, onChange, categories, responsibleOptions = [] }) 
 
 function GlobalSearchModal({query,onQueryChange,results,onSelect,onClose}) {
   return <Modal className="global-search-modal" title="Buscar lançamentos" onClose={onClose}><div className="global-search-content"><label className="global-search-input"><Search size={18}/><input autoFocus type="search" value={query} onChange={event=>onQueryChange(event.target.value)} placeholder="Descrição, categoria, cartão, observação…" aria-label="Buscar em todos os lançamentos"/><kbd>ESC</kbd></label>{!query.trim() ? <div className="global-search-empty"><span><Search size={19}/></span><b>Procure em todos os meses</b><small>Busque por descrição, categoria, forma de pagamento, cartão ou observação.</small></div> : results.length ? <><p className="global-search-count">{results.length} resultado{results.length === 1 ? '' : 's'}{results.length > 50 ? ' · mostrando os 50 mais recentes' : ''}</p><div className="global-search-results">{results.slice(0,50).map(item=>{const date=item.status==='pending'?item.due_date:(item.settled_on||item.spent_on);return <button type="button" className="global-search-result" key={item.id} onClick={()=>onSelect(item)}><span className={`entry-kind-icon ${item.kind}`}>{item.kind==='income'?<ArrowDownLeft size={15}/>:<ArrowUpRight size={15}/>}</span><span className="global-search-result-copy"><b>{item.description}</b><small>{item.kind==='income'?'Receita':'Despesa'} · {item.category} · {item.cards?.name || paymentLabel(item)} · {fmtDate(date)}</small></span><span className="global-search-result-value"><strong className={`amount ${item.kind==='income'?'income-text':''}`}>{item.kind==='income'?'+':'−'} {brl(item.amount)}</strong><small className={`status-pill ${item.status}`}>{item.status==='pending'?'Pendente':item.kind==='income'?'Recebida':'Paga'}</small></span></button>})}</div></> : <div className="global-search-empty"><span><Search size={19}/></span><b>Nenhum lançamento encontrado</b><small>Tente outra palavra, categoria ou forma de pagamento.</small></div>}</div></Modal>
-}
-
-function CsvImportModal({ rows, error, busy, onFile, onTemplate, onImport, onClose }) {
-  const validCount = rows.filter((row) => !row.error).length
-  return <Modal title="Importar lançamentos por CSV" onClose={onClose}><div className="modal-form csv-import-form"><p className="modal-help">Use o modelo para importar despesas e receitas. Datas aceitas: AAAA-MM-DD ou DD/MM/AAAA. Para rateio, separe os nomes com |.</p><button type="button" className="button subtle" onClick={onTemplate}><Download size={15}/> Baixar modelo CSV</button><label>Arquivo CSV<input type="file" accept=".csv,text/csv" onChange={(event) => event.target.files?.[0] && onFile(event.target.files[0])}/></label>{error && <div className="notice" role="alert">{error}</div>}{rows.length > 0 && <><div className="csv-summary">{validCount} linhas válidas · {rows.length-validCount} com erro · máximo de 500 por importação</div><div className="table-wrap csv-preview"><table className="entry-table"><thead><tr><th>Linha</th><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Validação</th></tr></thead><tbody>{rows.slice(0,20).map((row)=><tr key={row.line}><td>{row.line}</td><td>{row.value.kind === 'income' ? 'Receita' : 'Despesa'}</td><td>{row.value.description}</td><td>{brl(row.value.amount)}</td><td className={row.error ? 'withdrawal-text' : 'income-text'}>{row.error || 'Pronta'}</td></tr>)}</tbody></table></div>{rows.length > 20 && <small>Prévia das primeiras 20 linhas; todas as {rows.length} serão validadas.</small>}</>}<div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button type="button" className="button primary" disabled={busy || validCount === 0} onClick={onImport}><FileUp size={15}/>{busy ? 'Importando…' : `Importar ${validCount || ''} lançamentos`}</button></div></div></Modal>
 }
 
 function HistoryModal({ item, rows, onClose }) {

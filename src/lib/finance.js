@@ -55,6 +55,19 @@ export const initialEntry = (monthKey = monthOf()) => {
   return { kind: 'expense', description: '', amount: '', category: 'Alimentação', spent_on: date, due_date: date, settled_on: '', status: 'pending', payment_method: 'pix', card_id: '', invoice_month: monthKey, installment_count: '1', paid_by: '', responsible_person: '', responsible_details: [], shared_with: '', share_details: [], notes: '', attachmentFiles: [] }
 }
 
+export function installmentSchedule(total, count, firstInvoiceMonth) {
+  const installmentCount = Math.max(1, Math.floor(Number(count) || 1))
+  const cents = Math.round(Number(total) * 100)
+  const baseCents = Math.floor(cents / installmentCount)
+  const remainder = cents % installmentCount
+  const start = new Date(`${firstInvoiceMonth}-01T12:00:00`)
+  return Array.from({ length: installmentCount }, (_, index) => {
+    const invoiceDate = new Date(start)
+    invoiceDate.setMonth(invoiceDate.getMonth() + index)
+    return { month: monthOf(invoiceDate), amount: (baseCents + (index < remainder ? 1 : 0)) / 100 }
+  })
+}
+
 export function shareBreakdown(item) {
   if (item.share_details?.length) return item.share_details.map((share) => `${share.name}: ${brl(share.amount)}`).join(' · ')
   const names = [...new Set((item.shared_with || []).map((name) => name.trim()).filter(Boolean))]

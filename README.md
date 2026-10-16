@@ -10,6 +10,17 @@ Aplicação para registrar gastos manualmente e acompanhar o total de cada fatur
 
 O Supabase fornece o backend gerenciado, então não há servidor Node separado.
 
+## Organização do frontend
+
+- `src/App.jsx` coordena autenticação, estado dos dados e navegação entre as áreas.
+- `src/pages/` contém páginas completas, como o tutorial.
+- `src/components/` reúne componentes visuais, telas de acesso e formulários/modais reutilizados.
+- `src/lib/finance.js` concentra formatação e regras de datas, parcelas, rateios e cálculos financeiros.
+- `src/lib/supabase.js` configura a conexão com o Supabase.
+- `src/styles.css` contém os estilos e ajustes responsivos.
+
+Ao adicionar uma tela independente, coloque-a em `src/pages/`; para uma peça usada em mais de uma tela, use `src/components/`. Deixe em `App.jsx` a coordenação geral e os dados compartilhados entre páginas.
+
 No cadastro, informe também um nome de usuário (2 a 40 caracteres). Ele é salvo no perfil de autenticação e passa a ser o nome padrão exibido no aplicativo e nas responsabilidades das despesas. Contas existentes podem alterá-lo pelo ícone de edição ao lado do perfil; no celular, use o ícone de edição no cabeçalho.
 
 ## Iniciar

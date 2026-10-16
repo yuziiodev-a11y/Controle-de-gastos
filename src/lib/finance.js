@@ -97,3 +97,26 @@ export function allocateShareAmounts(total, shares) {
   return shares.map((share, index) => ({ ...share, amount: cents[index] / 100 }))
 }
 
+export function estimateCdiBalance(pot, movements, rates, asOf = localDate()) {
+  const startedOn = pot.created_at?.slice(0, 10) || asOf
+  const cdiPercentage = Number(pot.cdi_percentage || 0)
+  const flows = movements
+    .filter((movement) => movement.pot_id === pot.id && movement.moved_on <= asOf)
+    .slice()
+    .sort((a, b) => a.moved_on.localeCompare(b.moved_on) || a.created_at?.localeCompare(b.created_at || '') || a.id.localeCompare(b.id))
+  const applicableRates = rates.filter((rate) => rate.date >= startedOn && rate.date <= asOf).slice().sort((a, b) => a.date.localeCompare(b.date))
+  let balance = Number(pot.opening_balance || 0)
+  let flowIndex = 0
+  const applyFlow = (flow) => { balance += (flow.kind === 'deposit' ? 1 : -1) * Number(flow.amount) }
+
+  for (const rate of applicableRates) {
+    // Movements made on a given day begin earning from the next CDI business day.
+    while (flowIndex < flows.length && flows[flowIndex].moved_on < rate.date) applyFlow(flows[flowIndex++])
+    balance *= 1 + (Number(rate.value) / 100) * (cdiPercentage / 100)
+  }
+  while (flowIndex < flows.length) applyFlow(flows[flowIndex++])
+
+  const principal = Number(pot.opening_balance || 0) + flows.reduce((sum, flow) => sum + (flow.kind === 'deposit' ? 1 : -1) * Number(flow.amount), 0)
+  return { balance, earnings: balance - principal, principal }
+}
+

@@ -5,7 +5,7 @@ import {
   ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff, ChartNoAxesCombined, Tags, Bell, Paperclip, History, Users, BookOpen,
 } from 'lucide-react'
 import { configured, supabase } from './lib/supabase'
-import { brl, localDate, monthOf, monthStart, fmtDate, monthName, normalizeSearchText, userDisplayName, responsibleDetailsFor, responsibleNamesFor, responsibilityAmountsFor, paymentLabel, expenseCategories, incomeCategories, chartColors, cardColors, initialEntry, shareBreakdown, sharesFor, allocateShareAmounts, installmentSchedule } from './lib/finance.js'
+import { brl, localDate, monthOf, monthStart, fmtDate, monthName, normalizeSearchText, userDisplayName, responsibleDetailsFor, responsibleNamesFor, responsibilityAmountsFor, paymentLabel, expenseCategories, incomeCategories, chartColors, cardColors, initialEntry, shareBreakdown, sharesFor, allocateShareAmounts, installmentSchedule, estimateCdiBalance } from './lib/finance.js'
 import { EmptyState, Modal, MonthPicker, PanelHeading, SummaryCard, YearPicker } from './components/UI.jsx'
 import { AuthScreen, SetupScreen, authErrorMessage } from './components/AuthScreens.jsx'
 import { TutorialPage } from './pages/TutorialPage.jsx'
@@ -65,6 +65,9 @@ export default function App() {
   const [potModal, setPotModal] = useState(false)
   const [editingPotId, setEditingPotId] = useState(null)
   const [potForm, setPotForm] = useState({ name: '', goal_amount: '', goal_due_date: '', opening_balance: '0' })
+  const [cdiRates, setCdiRates] = useState([])
+  const [cdiState, setCdiState] = useState({ loading: false, error: '', updatedAt: null, coverageStart: null, fromCache: false })
+  const [cdiRefreshKey, setCdiRefreshKey] = useState(0)
   const [movementModal, setMovementModal] = useState(false)
   const [movementForm, setMovementForm] = useState({ pot_id: '', kind: 'deposit', amount: '', moved_on: localDate(), note: '' })
   const [budgets, setBudgets] = useState([])
@@ -77,6 +80,11 @@ export default function App() {
   const [entryFilters, setEntryFilters] = useState({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all', responsible: 'all' })
   const [hideValues, setHideValues] = useState(false)
 
+  const cdiStartDate = pots
+    .filter((pot) => pot.cdi_percentage !== null && pot.cdi_percentage !== undefined && pot.cdi_percentage !== '')
+    .map((pot) => pot.created_at?.slice(0, 10) || localDate())
+    .sort()[0] || ''
+
   useEffect(() => {
     if (!supabase) { setLoading(false); return }
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setLoading(false) })
@@ -88,6 +96,33 @@ export default function App() {
   }, [])
 
   useEffect(() => { if (session) loadData() }, [session, selectedMonth])
+
+  useEffect(() => {
+    if (!session || !cdiStartDate) { setCdiRates([]); setCdiState({ loading: false, error: '', updatedAt: null, coverageStart: null, fromCache: false }); return }
+    let active = true
+    const cacheKey = `meucontrole:cdi:${session.user.id}`
+    let cached = null
+    try { cached = JSON.parse(localStorage.getItem(cacheKey) || 'null') } catch { cached = null }
+    if (!cdiRefreshKey && cached?.rates?.length && cached.coverageStart <= cdiStartDate && Date.now() - cached.fetchedAt < 6 * 60 * 60 * 1000) {
+      setCdiRates(cached.rates)
+      setCdiState({ loading: false, error: '', updatedAt: cached.updatedAt, coverageStart: cached.coverageStart, fromCache: true })
+      return () => { active = false }
+    }
+    setCdiState((current) => ({ ...current, loading: true, error: '' }))
+    supabase.functions.invoke('cdi-rates', { body: { startDate: cdiStartDate, endDate: localDate() } }).then(({ data, error }) => {
+      if (error) throw error
+      if (!Array.isArray(data?.rates)) throw new Error(data?.error || 'A consulta do CDI retornou dados inválidos.')
+      const nextCache = { rates: data.rates, coverageStart: data.coverageStart, updatedAt: data.updatedAt, fetchedAt: Date.now() }
+      try { localStorage.setItem(cacheKey, JSON.stringify(nextCache)) } catch { /* O cálculo continua mesmo se o navegador não permitir cache local. */ }
+      if (active) {
+        setCdiRates(data.rates)
+        setCdiState({ loading: false, error: '', updatedAt: data.updatedAt, coverageStart: data.coverageStart, fromCache: false })
+      }
+    }).catch((error) => {
+      if (active) setCdiState((current) => ({ ...current, loading: false, error: error?.message || 'Não foi possível atualizar o CDI.' }))
+    })
+    return () => { active = false }
+  }, [session?.user?.id, cdiStartDate, cdiRefreshKey])
 
   useEffect(() => {
     if (!highlightedEntryId) return undefined
@@ -460,11 +495,11 @@ export default function App() {
     } })
   }
 
-  function openNewPot() { setEditingPotId(null); setPotForm({ name: '', goal_amount: '', goal_due_date: '', opening_balance: '0' }); setPotModal(true) }
-  function openEditPot(item) { setEditingPotId(item.id); setPotForm({ name: item.name, goal_amount: item.goal_amount || '', goal_due_date: item.goal_due_date || '', opening_balance: String(item.opening_balance) }); setPotModal(true) }
+  function openNewPot() { setEditingPotId(null); setPotForm({ name: '', goal_amount: '', goal_due_date: '', opening_balance: '0', cdi_percentage: '' }); setPotModal(true) }
+  function openEditPot(item) { setEditingPotId(item.id); setPotForm({ name: item.name, goal_amount: item.goal_amount || '', goal_due_date: item.goal_due_date || '', opening_balance: String(item.opening_balance), cdi_percentage: item.cdi_percentage ?? '' }); setPotModal(true) }
   async function savePot(event) {
     event.preventDefault(); setMessage('')
-    const payload = { name: potForm.name.trim(), goal_amount: potForm.goal_amount ? Number(potForm.goal_amount) : null, goal_due_date: potForm.goal_due_date || null, opening_balance: Number(potForm.opening_balance || 0) }
+    const payload = { name: potForm.name.trim(), goal_amount: potForm.goal_amount ? Number(potForm.goal_amount) : null, goal_due_date: potForm.goal_due_date || null, opening_balance: Number(potForm.opening_balance || 0), cdi_percentage: potForm.cdi_percentage === '' ? null : Number(potForm.cdi_percentage) }
     const result = editingPotId ? await supabase.from('savings_pots').update(payload).eq('id', editingPotId) : await supabase.from('savings_pots').insert(payload)
     if (result.error) setMessage(result.error.message); else { setPotModal(false); await loadData() }
   }
@@ -650,7 +685,11 @@ export default function App() {
     const responsibleMatch = entryFilters.responsible === 'all' || responsibleNamesFor(item, userDisplayName(session.user)).includes(entryFilters.responsible)
     return (!query || searchable.includes(query)) && (entryFilters.kind === 'all' || item.kind === entryFilters.kind) && (entryFilters.status === 'all' || item.status === entryFilters.status) && (entryFilters.category === 'all' || item.category === entryFilters.category) && (entryFilters.payment === 'all' || item.payment_method === entryFilters.payment) && responsibleMatch
   })
-  const potBalances = pots.map((pot) => ({ ...pot, balance: Number(pot.opening_balance) + movements.filter((item) => item.pot_id === pot.id).reduce((sum, item) => sum + (item.kind === 'deposit' ? Number(item.amount) : -Number(item.amount)), 0) }))
+  const potBalances = pots.map((pot) => {
+    const balance = Number(pot.opening_balance) + movements.filter((item) => item.pot_id === pot.id).reduce((sum, item) => sum + (item.kind === 'deposit' ? Number(item.amount) : -Number(item.amount)), 0)
+    const cdiEstimate = pot.cdi_percentage == null ? null : estimateCdiBalance(pot, movements, cdiRates)
+    return { ...pot, balance, cdiEstimate }
+  })
   const monthMovements = movements.filter((item) => item.moved_on?.startsWith(selectedMonth))
   const monthDeposits = monthMovements.filter((item) => item.kind === 'deposit').reduce((sum, item) => sum + Number(item.amount), 0)
   const monthWithdrawals = monthMovements.filter((item) => item.kind === 'withdrawal').reduce((sum, item) => sum + Number(item.amount), 0)
@@ -806,8 +845,8 @@ export default function App() {
       </> : activePage === 'savings' ? <>
         {savingsGoals.length > 0 && <section className="panel goal-summary-panel"><PanelHeading title="Resumo das metas" subtitle={`${savingsGoals.length} cofrinho${savingsGoals.length === 1 ? '' : 's'} com objetivo definido`}/><div className="goal-summary-grid"><div><span>Guardado para as metas</span><strong>{brl(totalGoalSaved)}</strong></div><div><span>Falta para alcançar</span><strong>{brl(totalGoalRemaining)}</strong></div><div><span>Valor total das metas</span><strong>{brl(totalGoalAmount)}</strong></div><div className="goal-summary-progress"><div><span>Progresso geral</span><b>{Math.round(totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}%</b></div><i role="progressbar" aria-label="Progresso geral das metas" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}><span style={{width:`${Math.min(100,totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}%`}}/></i></div></div></section>}
         <section className="savings-hero"><div><span className="hero-kicker">TOTAL GUARDADO</span><strong>{brl(potBalances.reduce((sum, pot) => sum + pot.balance, 0))}</strong><span className="hero-caption">Saldo somado dos seus cofrinhos</span></div><div className="savings-month"><span>Movimentações em {monthName(selectedMonth)}</span><b className="income-text">+ {brl(monthDeposits)} guardados</b><b className="withdrawal-text">− {brl(monthWithdrawals)} retirados</b></div><PiggyBank className="savings-hero-icon" size={35} /></section>
-        <section className="panel savings-note"><span><PiggyBank size={18}/><span>Os valores dos cofrinhos são um acompanhamento manual separado das despesas. Assim, guardar dinheiro não aparece como um novo gasto no seu orçamento.</span></span><button className="button subtle" onClick={openEmergencyFund}><Target size={15}/> Sugerir meta de emergência</button></section>
-        {potBalances.length ? <section className="savings-pot-grid">{potBalances.map((pot) => { const progress = pot.goal_amount ? Math.min(100, pot.balance / Number(pot.goal_amount) * 100) : null; return <article className="panel savings-pot" key={pot.id}><div className="pot-title"><span className="pot-icon"><PiggyBank size={19}/></span><div><h2>{pot.name}</h2><span>{pot.goal_amount ? `Meta: ${brl(pot.goal_amount)}` : 'Sem meta definida'}</span></div><div className="row-actions"><button className="icon-button" aria-label={`Editar cofrinho ${pot.name}`} title="Editar cofrinho" onClick={() => openEditPot(pot)}><Pencil size={15}/></button><button className="icon-button danger" aria-label={`Excluir cofrinho ${pot.name}`} title="Excluir cofrinho" onClick={() => deletePot(pot)}><Trash2 size={15}/></button></div></div><strong className="pot-balance">{brl(pot.balance)}</strong>{pot.goal_due_date && pot.goal_amount && <div className="goal-suggestion">{(() => { const remaining=Math.max(0,Number(pot.goal_amount)-pot.balance); const today=new Date(); const due=new Date(`${pot.goal_due_date}T12:00:00`); const months=Math.max(1,(due.getFullYear()-today.getFullYear())*12+due.getMonth()-today.getMonth()+1); return remaining===0?'Meta alcançada!':`Para chegar até ${fmtDate(pot.goal_due_date)}, guarde cerca de ${brl(remaining/months)} por mês.` })()}</div>}{progress !== null && <div className="pot-progress"><div><span>Progresso da meta</span><b>{Math.round(progress)}%</b></div><i><span style={{width:`${progress}%`}}/></i></div>}<div className="pot-actions"><button className="button subtle" onClick={() => openMovement(pot, 'deposit')}><ArrowDownLeft size={15}/> Guardar</button><button className="button subtle" onClick={() => openMovement(pot, 'withdrawal')}><ArrowUpRight size={15}/> Retirar</button></div></article> })}</section> : <section className="panel"><EmptyState title="Crie seu primeiro cofrinho" text="Pode ser sua reserva, uma viagem ou o saldo que quer manter guardado. Você informa o saldo inicial e registra entradas e retiradas." action={<button className="button primary" onClick={openNewPot}><Plus size={15}/> Criar cofrinho</button>}/></section>}
+        <section className="panel savings-note"><span><PiggyBank size={18}/><span>Os valores dos cofrinhos são um acompanhamento manual separado das despesas. O CDI é apenas uma projeção bruta, calculada com os dias úteis publicados pelo Banco Central; não altera seu saldo registrado.{cdiState.error && <small className="savings-cdi-status error">Não foi possível atualizar as taxas do CDI. {cdiRates.length ? 'Exibindo a última consulta salva.' : 'Confira se a função cdi-rates foi publicada.'}</small>}{!cdiState.error && cdiStartDate && <small className="savings-cdi-status">{cdiState.loading ? 'Atualizando CDI…' : cdiState.updatedAt ? `Taxas do CDI atualizadas até ${fmtDate(cdiState.updatedAt)}${cdiState.fromCache ? ' · consulta em cache' : ''}.` : 'Aguardando as taxas do CDI.'}</small>}</span></span><div className="savings-note-actions"><button className="button subtle" onClick={openEmergencyFund}><Target size={15}/> Sugerir meta de emergência</button>{cdiStartDate && <button className="button subtle" disabled={cdiState.loading} onClick={() => setCdiRefreshKey((key) => key + 1)}>{cdiState.loading ? 'Atualizando…' : 'Atualizar CDI'}</button>}</div></section>
+        {potBalances.length ? <section className="savings-pot-grid">{potBalances.map((pot) => { const progress = pot.goal_amount ? Math.min(100, pot.balance / Number(pot.goal_amount) * 100) : null; return <article className="panel savings-pot" key={pot.id}><div className="pot-title"><span className="pot-icon"><PiggyBank size={19}/></span><div><h2>{pot.name}</h2><span>{pot.goal_amount ? `Meta: ${brl(pot.goal_amount)}` : 'Sem meta definida'}</span></div><div className="row-actions"><button className="icon-button" aria-label={`Editar cofrinho ${pot.name}`} title="Editar cofrinho" onClick={() => openEditPot(pot)}><Pencil size={15}/></button><button className="icon-button danger" aria-label={`Excluir cofrinho ${pot.name}`} title="Excluir cofrinho" onClick={() => deletePot(pot)}><Trash2 size={15}/></button></div></div><strong className="pot-balance">{brl(pot.balance)}</strong>{pot.cdi_percentage != null && <div className="pot-cdi-estimate"><div><span>Saldo estimado com CDI</span><strong>{cdiRates.length ? brl(pot.cdiEstimate.balance) : '—'}</strong></div><div><span>Rendimento bruto estimado</span><strong>{cdiRates.length ? brl(pot.cdiEstimate.earnings) : '—'}</strong></div><small>{Number(pot.cdi_percentage).toLocaleString('pt-BR')}% do CDI · estimativa desde a criação do cofrinho</small></div>}{pot.goal_due_date && pot.goal_amount && <div className="goal-suggestion">{(() => { const remaining=Math.max(0,Number(pot.goal_amount)-pot.balance); const today=new Date(); const due=new Date(`${pot.goal_due_date}T12:00:00`); const months=Math.max(1,(due.getFullYear()-today.getFullYear())*12+due.getMonth()-today.getMonth()+1); return remaining===0?'Meta alcançada!':`Para chegar até ${fmtDate(pot.goal_due_date)}, guarde cerca de ${brl(remaining/months)} por mês.` })()}</div>}{progress !== null && <div className="pot-progress"><div><span>Progresso da meta</span><b>{Math.round(progress)}%</b></div><i><span style={{width:`${progress}%`}}/></i></div>}<div className="pot-actions"><button className="button subtle" onClick={() => openMovement(pot, 'deposit')}><ArrowDownLeft size={15}/> Guardar</button><button className="button subtle" onClick={() => openMovement(pot, 'withdrawal')}><ArrowUpRight size={15}/> Retirar</button></div></article> })}</section> : <section className="panel"><EmptyState title="Crie seu primeiro cofrinho" text="Pode ser sua reserva, uma viagem ou o saldo que quer manter guardado. Você informa o saldo inicial e registra entradas e retiradas." action={<button className="button primary" onClick={openNewPot}><Plus size={15}/> Criar cofrinho</button>}/></section>}
         <section className="panel entries-panel"><PanelHeading title="Movimentações do mês" subtitle={`Entradas e retiradas em ${monthName(selectedMonth)}`}/>{monthMovements.length ? <div className="table-wrap"><table className="entry-table"><thead><tr><th>Cofrinho</th><th>Tipo</th><th>Data</th><th>Observação</th><th className="align-right">Valor</th><th/></tr></thead><tbody>{[...monthMovements].sort((a,b)=>b.moved_on.localeCompare(a.moved_on)).map((item)=><tr key={item.id}><td>{pots.find(p=>p.id===item.pot_id)?.name || 'Cofrinho'}</td><td>{item.kind==='deposit'?'Guardado':'Retirado'}</td><td>{fmtDate(item.moved_on)}</td><td>{item.note || '—'}</td><td className={`align-right amount ${item.kind==='deposit'?'income-text':'withdrawal-text'}`}>{item.kind==='deposit'?'+':'−'} {brl(item.amount)}</td><td><button className="icon-button danger" aria-label={`Excluir movimentação de ${brl(item.amount)}`} title="Excluir movimentação" onClick={()=>deleteMovement(item)}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div> : <EmptyState title="Sem movimentações neste mês" text="As movimentações que você registrar nos cofrinhos aparecerão aqui."/>}</section>
       </> : activePage === 'categories' ? <>
         <section className="panel categories-manager"><PanelHeading title="Categorias personalizadas" subtitle="Categorias removidas não apagam lançamentos antigos."/><form className="category-add" onSubmit={async(e)=>{e.preventDefault();const {error}=await supabase.from('user_categories').insert({kind:categoryForm.kind,name:categoryForm.name.trim()});if(error)setMessage(error.message);else{setCategoryForm({kind:'expense',name:''});await loadData()}}}><select value={categoryForm.kind} onChange={e=>setCategoryForm({...categoryForm,kind:e.target.value})}><option value="expense">Despesa</option><option value="income">Receita</option></select><input required maxLength="40" placeholder="Nome da categoria" value={categoryForm.name} onChange={e=>setCategoryForm({...categoryForm,name:e.target.value})}/><button className="button primary"><Plus size={15}/> Adicionar</button></form><div className="custom-category-list">{['expense','income'].map(kind=><div key={kind}><h3>{kind==='expense'?'Despesas':'Receitas'}</h3>{userCategories.filter(c=>c.kind===kind).length?userCategories.filter(c=>c.kind===kind).map(c=><div className="custom-category-row" key={c.id}><span>{c.name}</span><button className="icon-button danger" aria-label={`Excluir categoria ${c.name}`} title="Excluir categoria" onClick={()=>requestConfirmation({title:'Excluir categoria?',message:`Excluir a categoria “${c.name}”?`,details:'Os lançamentos antigos que usam essa categoria serão mantidos.',confirmLabel:'Excluir categoria',onConfirm:async()=>{setUserCategories(current=>current.filter(category=>category.id!==c.id));const {error}=await supabase.from('user_categories').delete().eq('id',c.id);if(error)setMessage(error.message);await loadData()}})}><Trash2 size={15}/></button></div>):<p>Nenhuma categoria personalizada.</p>}</div>)}</div></section>

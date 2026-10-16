@@ -1,2 +1,5 @@
 [functions.send-due-reminders]
 verify_jwt = false
+
+[functions.cdi-rates]
+verify_jwt = true

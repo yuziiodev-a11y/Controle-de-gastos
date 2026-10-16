@@ -40,7 +40,7 @@ O frontend usa apenas a chave publicável. Nunca coloque uma chave `service_role
 
 ### Cofrinhos
 
-A área Cofrinhos acompanha saldos guardados manualmente, com saldo inicial, meta opcional e movimentações de depósito e retirada. Esses valores ficam separados dos lançamentos de despesas e receitas para evitar contar uma transferência para poupança como um gasto adicional. Para habilitar o recurso, execute `202610160005_savings_pots.sql` no SQL Editor do Supabase, depois das migrações anteriores.
+A área Cofrinhos acompanha saldos guardados manualmente, com saldo inicial, meta opcional e movimentações de depósito e retirada. Esses valores ficam separados dos lançamentos de despesas e receitas para evitar contar uma transferência para poupança como um gasto adicional. Para habilitar o recurso, execute `202610160005_savings_pots.sql` no SQL Editor do Supabase, depois das migrações anteriores. Para habilitar a simulação automática de rendimento, execute também `202610160014_savings_cdi_percentage.sql` e publique a função `supabase functions deploy cdi-rates`. Depois, ao editar um cofrinho, informe o percentual contratado do CDI (por exemplo, 100%). O app consulta as taxas diárias da série 12 do SGS do Banco Central e estima o saldo bruto com capitalização diária, considerando o saldo inicial desde a criação do cofrinho e os depósitos/retiradas registrados. A estimativa não altera o saldo manual e não desconta impostos ou taxas do investimento. O navegador guarda a última consulta por até seis horas; é possível solicitar uma atualização manual na página Cofrinhos.
 
 ### Orçamento, recorrências e relatórios
 

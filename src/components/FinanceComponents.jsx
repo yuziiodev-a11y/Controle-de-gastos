@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays, Check, ChevronDown, CreditCard, History, Pencil, Paperclip, PiggyBank, Plus, ReceiptText, Repeat, Search, SlidersHorizontal, Tags, Target, Trash2, Users, Wallet, X, Bell } from 'lucide-react'
+import { ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays, Check, ChevronDown, CircleAlert, CreditCard, History, Pencil, Paperclip, PiggyBank, Plus, ReceiptText, Repeat, Search, SlidersHorizontal, Tags, Target, Trash2, Users, Wallet, X, Bell, RefreshCw } from 'lucide-react'
 import { EmptyState, Modal, MonthPicker } from './UI.jsx'
 import { brl, localDate, monthOf, monthStart, fmtDate, monthName, normalizeSearchText, userDisplayName, responsibleDetailsFor, responsibleNamesFor, responsibilityAmountsFor, paymentLabel, expenseCategories, incomeCategories, chartColors, cardColors, initialEntry, shareBreakdown, sharesFor, allocateShareAmounts, installmentSchedule } from '../lib/finance.js'
 
@@ -69,9 +69,25 @@ export function PotModal({ title, value, onChange, onClose, onSubmit }) {
   return <Modal title={title} onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
     <label>Nome do cofrinho<input required maxLength="60" value={value.name} onChange={(event) => set('name', event.target.value)} placeholder="Ex.: Reserva de emergência" /></label>
     <div className="modal-form-two"><label>Saldo inicial<input type="number" min="0" step="0.01" required value={value.opening_balance} onChange={(event) => set('opening_balance', event.target.value)} /></label><label>Meta (opcional)<input type="number" min="0.01" step="0.01" value={value.goal_amount} onChange={(event) => set('goal_amount', event.target.value)} placeholder="Ex.: 5000,00" /></label></div>
+    <label>Rendimento estimado (% do CDI)<input type="number" min="0" max="1000" step="0.01" value={value.cdi_percentage ?? ''} onChange={(event) => set('cdi_percentage', event.target.value)} placeholder="Ex.: 100" /></label>
+    <p className="modal-help">Opcional. Informe o percentual do CDI do investimento, como 100% ou 110%. O app usará as taxas diárias do Banco Central para estimar o rendimento bruto; impostos e taxas do produto não estão incluídos.</p>
     <label>Prazo da meta (opcional)<input type="date" value={value.goal_due_date || ''} onChange={event=>set('goal_due_date',event.target.value)}/></label><p className="modal-help">O saldo inicial é o valor que já está guardado hoje. Com uma meta e prazo, o cofrinho calcula quanto guardar por mês.</p>
     <div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15} /> Salvar cofrinho</button></div>
   </form></Modal>
+}
+
+export function CdiStatusPanel({ status, ratesAvailable, hasCdiPots, onRefresh, onEmergencyFund }) {
+  const label = status.loading
+    ? 'Atualizando taxas'
+    : status.error
+      ? 'Falha na atualização'
+      : status.updatedAt
+        ? `Atualizado até ${fmtDate(status.updatedAt)}${status.fromCache ? ' · cache local' : ''}`
+        : 'CDI não configurado'
+  return <section className="panel savings-note cdi-status-panel" aria-label="Status do rendimento CDI">
+    <div className="cdi-status-main"><span className="cdi-status-icon"><PiggyBank size={18}/></span><div className="cdi-status-copy"><div className="cdi-status-heading"><b>Rendimento CDI</b><span className={`cdi-status-badge ${status.error ? 'error' : status.loading ? 'loading' : status.updatedAt ? 'ready' : ''}`}>{label}</span></div><p>Simulação bruta com as taxas diárias do Banco Central. Não altera o saldo registrado e não desconta impostos ou taxas do investimento.</p>{status.error && <div className="cdi-error" role="alert"><CircleAlert size={16}/><span><b>Não foi possível consultar as taxas.</b><small>{status.error}</small>{!ratesAvailable && <small>Confirme se a migração 014 foi aplicada e se a Edge Function <code>cdi-rates</code> foi publicada.</small>}{ratesAvailable && <small>Exibindo os dados da última consulta salva.</small>}</span></div>}</div></div>
+    <div className="savings-note-actions"><button className="button subtle" onClick={onEmergencyFund}><Target size={15}/> Sugerir meta</button>{hasCdiPots && <button className="button subtle" disabled={status.loading} onClick={onRefresh}><RefreshCw size={14} className={status.loading ? 'spin' : ''}/>{status.loading ? 'Atualizando…' : 'Atualizar CDI'}</button>}</div>
+  </section>
 }
 
 export function MovementModal({ value, pots, onChange, onClose, onSubmit }) {

@@ -13,6 +13,21 @@ const monthStart = (key) => `${key}-01`
 const fmtDate = (value) => value ? new Date(`${value}T12:00:00`).toLocaleDateString('pt-BR') : '—'
 const monthName = (key, options = { month: 'long', year: 'numeric' }) => new Date(`${key}-15T12:00:00`).toLocaleDateString('pt-BR', options)
 const normalizeSearchText = (value) => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').trim()
+const userDisplayName = (user) => user?.user_metadata?.full_name || user?.user_metadata?.name || 'Eu'
+const responsibleDetailsFor = (item, fallbackName) => {
+  if (item.responsible_details?.length) return item.responsible_details
+  return [{ name: item.responsible_person || fallbackName || 'Eu', percentage: 100 }]
+}
+const responsibleNamesFor = (item, fallbackName) => responsibleDetailsFor(item, fallbackName).map((person) => person.name)
+const responsibilityAmountsFor = (item, fallbackName) => {
+  const details = responsibleDetailsFor(item, fallbackName)
+  const totalCents = Math.round(Number(item.amount) * 100)
+  const exact = details.map((person) => totalCents * Number(person.percentage) / 100)
+  const cents = exact.map(Math.floor)
+  let remainder = totalCents - cents.reduce((sum, amount) => sum + amount, 0)
+  exact.map((amount, index) => ({ index, fraction: amount - cents[index] })).sort((a, b) => b.fraction - a.fraction || a.index - b.index).slice(0, remainder).forEach(({ index }) => { cents[index] += 1 })
+  return details.map((person, index) => ({ name: person.name, amount: cents[index] / 100 }))
+}
 const paymentLabel = (item) => {
   if (item.payment_method === 'credit_card') return item.cards?.name || 'Cartão de crédito'
   if (item.payment_method === 'debit_card') return 'Cartão de débito'
@@ -25,7 +40,7 @@ const incomeCategories = ['Salário', 'Freelance', 'Investimentos', 'Reembolso',
 const chartColors = ['#6d28d9', '#8428d8', '#9b36d7', '#5b21b6', '#ad5ce0', '#7336b8', '#bf7ae5', '#8b5ac7', '#d1a6eb']
 const initialEntry = (monthKey = monthOf()) => {
   const date = monthKey === monthOf() ? localDate() : monthStart(monthKey)
-  return { kind: 'expense', description: '', amount: '', category: 'Alimentação', spent_on: date, due_date: date, settled_on: '', status: 'pending', payment_method: 'pix', card_id: '', invoice_month: monthKey, installment_count: '1', paid_by: '', responsible_person: '', shared_with: '', share_details: [], notes: '', attachmentFiles: [] }
+  return { kind: 'expense', description: '', amount: '', category: 'Alimentação', spent_on: date, due_date: date, settled_on: '', status: 'pending', payment_method: 'pix', card_id: '', invoice_month: monthKey, installment_count: '1', paid_by: '', responsible_person: '', responsible_details: [], shared_with: '', share_details: [], notes: '', attachmentFiles: [] }
 }
 
 function shareBreakdown(item) {
@@ -117,10 +132,13 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [authMode, setAuthMode] = useState('login')
   const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordRecovery, setPasswordRecovery] = useState(false)
   const [message, setMessage] = useState('')
+  const [profileModal, setProfileModal] = useState(false)
+  const [profileName, setProfileName] = useState('')
   const [entries, setEntries] = useState([])
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false)
   const [globalSearchQuery, setGlobalSearchQuery] = useState('')
@@ -144,6 +162,7 @@ export default function App() {
   const [activePage, setActivePage] = useState('month')
   const [selectedMonth, setSelectedMonth] = useState(monthOf())
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()))
+  const [cardResponsibleFilter, setCardResponsibleFilter] = useState('all')
   const [userCategories, setUserCategories] = useState([])
   const [categoryForm, setCategoryForm] = useState({ kind: 'expense', name: '' })
   const [reminderSettings, setReminderSettings] = useState({ enabled: false, days_before: 1 })
@@ -168,7 +187,7 @@ export default function App() {
   const [recurringModal, setRecurringModal] = useState(false)
   const [editingRecurringId, setEditingRecurringId] = useState(null)
   const [recurringForm, setRecurringForm] = useState({ kind: 'expense', description: '', amount: '', category: 'Moradia', day_of_month: '1', payment_method: 'pix', card_id: '', starts_on: monthStart(monthOf()), ends_on: '' })
-  const [entryFilters, setEntryFilters] = useState({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all' })
+  const [entryFilters, setEntryFilters] = useState({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all', responsible: 'all' })
   const [hideValues, setHideValues] = useState(false)
 
   useEffect(() => {
@@ -235,11 +254,40 @@ export default function App() {
 
   async function handleAuth(event) {
     event.preventDefault(); setMessage('')
+    if (authMode === 'signup' && username.trim().length < 2) { setMessage('O nome de usuário precisa ter pelo menos 2 caracteres.'); return }
     const result = authMode === 'login'
       ? await supabase.auth.signInWithPassword({ email, password })
-      : await supabase.auth.signUp({ email, password })
+      : await supabase.auth.signUp({ email, password, options: { data: { full_name: username.trim() } } })
     if (result.error) setMessage(authErrorMessage(result.error, authMode))
     else if (authMode === 'signup' && !result.data.session) setMessage('Cadastro feito. Confirme seu e-mail para entrar.')
+  }
+
+  async function saveProfileName(event) {
+    event.preventDefault(); setMessage('')
+    const nextName = profileName.trim()
+    if (nextName.length < 2) { setMessage('O nome de usuário precisa ter pelo menos 2 caracteres.'); return }
+    const oldAutoName = session.user.user_metadata?.full_name || session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'Eu'
+    const { data, error } = await supabase.auth.updateUser({ data: { full_name: nextName } })
+    if (error) { setMessage(error.message); return }
+    if (data.user) setSession((current) => current ? { ...current, user: data.user } : current)
+    const changedGroups = new Set()
+    let syncError = null
+    for (const item of entries) {
+      if (item.kind !== 'expense' || item.responsible_person !== oldAutoName || item.responsible_person === nextName) continue
+      const details = responsibleDetailsFor(item, oldAutoName).map((person) => ({ ...person, name: person.name === oldAutoName ? nextName : person.name }))
+      if (item.installment_group_id) {
+        if (changedGroups.has(item.installment_group_id)) continue
+        changedGroups.add(item.installment_group_id)
+        const { error: updateError } = await supabase.from('expenses').update({ responsible_person: nextName, responsible_details: details }).eq('installment_group_id', item.installment_group_id)
+        if (updateError) { syncError = updateError; break }
+      } else {
+        const { error: updateError } = await supabase.from('expenses').update({ responsible_person: nextName, responsible_details: details }).eq('id', item.id)
+        if (updateError) { syncError = updateError; break }
+      }
+    }
+    setProfileModal(false)
+    if (syncError) setMessage(`Nome atualizado, mas alguns responsáveis antigos não foram sincronizados: ${syncError.message}`)
+    await loadData()
   }
 
   async function sendPasswordRecovery(event) {
@@ -261,7 +309,7 @@ export default function App() {
     }
   }
 
-  function openNewEntry() { setEditingEntryId(null); setEntryForm(initialEntry(selectedMonth)); setEntryModal(true) }
+  function openNewEntry() { setEditingEntryId(null); const name = userDisplayName(session.user); setEntryForm({ ...initialEntry(selectedMonth), responsible_person: name, responsible_details: [{ name, percentage: 100 }] }); setEntryModal(true) }
   function openEditEntry(item) {
     setEditingEntryId(item.id)
     setEntryForm({
@@ -269,7 +317,7 @@ export default function App() {
       spent_on: item.spent_on, due_date: item.due_date, settled_on: item.settled_on || '', status: item.status || 'settled',
       payment_method: item.payment_method || (item.card_id ? 'credit_card' : 'other'),
       card_id: item.card_id || '', invoice_month: item.invoice_month?.slice(0, 7) || selectedMonth, installment_count: '1',
-      paid_by: item.paid_by || '', responsible_person: item.responsible_person || '', shared_with: (item.shared_with || []).join(', '), share_details: item.share_details || [], notes: item.notes || '', attachmentFiles: [],
+      paid_by: item.paid_by || '', responsible_person: responsibleNamesFor(item, userDisplayName(session.user)).join(', '), responsible_details: responsibleDetailsFor(item, userDisplayName(session.user)), shared_with: (item.shared_with || []).join(', '), share_details: item.share_details || [], notes: item.notes || '', attachmentFiles: [],
     })
     setEntryModal(true)
   }
@@ -279,6 +327,13 @@ export default function App() {
     const count = Number(entryForm.installment_count || 1)
     const amount = Number(entryForm.amount)
     const participantNames = entryForm.kind === 'expense' ? [...new Set(entryForm.shared_with.split(/[,;]/).map((name) => name.trim()).filter(Boolean))] : []
+    const responsibleNames = entryForm.kind === 'expense' ? [...new Set((entryForm.responsible_person || '').split(/[,;]/).map((name) => name.trim()).filter(Boolean))] : []
+    if (entryForm.kind === 'expense' && !responsibleNames.length) responsibleNames.push(userDisplayName(session.user))
+    const enteredResponsibleDetails = entryForm.responsible_details || []
+    const responsibleDetails = responsibleNames.map((name) => ({ name, percentage: Number(enteredResponsibleDetails.find((person) => person.name === name)?.percentage ?? (responsibleNames.length === 1 ? 100 : 0)) }))
+    if (responsibleDetails.some((person) => !Number.isFinite(person.percentage) || person.percentage < 0) || Math.round(responsibleDetails.reduce((sum, person) => sum + person.percentage, 0) * 100) !== 10000) {
+      setMessage('A divisão da responsabilidade precisa somar exatamente 100%.'); return
+    }
     const enteredShares = entryForm.share_details || []
     let shareDetails = []
     if (participantNames.length) {
@@ -300,7 +355,8 @@ export default function App() {
       card_id: entryForm.kind === 'expense' && entryForm.payment_method === 'credit_card' ? (entryForm.card_id || null) : null,
       invoice_month: monthStart(entryForm.invoice_month || selectedMonth),
       paid_by: entryForm.kind === 'expense' ? (entryForm.paid_by.trim() || null) : null,
-      responsible_person: entryForm.kind === 'expense' ? (entryForm.responsible_person.trim() || null) : null,
+      responsible_person: entryForm.kind === 'expense' ? responsibleNames.join(', ') : null,
+      responsible_details: entryForm.kind === 'expense' ? responsibleDetails : [],
       shared_with: participantNames,
       share_details: shareDetails,
       notes: entryForm.notes.trim() || null,
@@ -325,7 +381,7 @@ export default function App() {
     if (result.error) { setMessage(result.error.message); return }
     const editedEntry = editingEntryId ? entries.find((item) => item.id === editingEntryId) : null
     if (editedEntry?.installment_group_id) {
-      const { error } = await supabase.from('expenses').update({ responsible_person: payload.responsible_person }).eq('installment_group_id', editedEntry.installment_group_id)
+      const { error } = await supabase.from('expenses').update({ responsible_person: payload.responsible_person, responsible_details: payload.responsible_details }).eq('installment_group_id', editedEntry.installment_group_id)
       if (error) { setMessage(`Lançamento atualizado, mas não foi possível atualizar o responsável nas outras parcelas: ${error.message}`); await loadData(); return }
     }
     const savedEntries = Array.isArray(result.data) ? result.data : [result.data]
@@ -392,7 +448,8 @@ export default function App() {
       if (value.card_name && !card) return { line, error: `cartão “${value.card_name}” não encontrado` }
       if (value.payment_method === 'credit_card' && !card) return { line, error: 'informe um cartão existente na coluna cartao para pagamento em crédito' }
       const { card_name, ...record } = value
-      return { value: { ...record, paid_by: value.kind === 'expense' ? (value.paid_by || null) : null, shared_with: value.kind === 'expense' ? value.shared_with : [], card_id: value.payment_method === 'credit_card' ? card.id : null, invoice_month: value.payment_method === 'credit_card' ? value.invoice_month : monthStart(value.spent_on.slice(0, 7)) } }
+      const defaultResponsible = value.kind === 'expense' ? userDisplayName(session.user) : null
+      return { value: { ...record, paid_by: value.kind === 'expense' ? (value.paid_by || null) : null, responsible_person: defaultResponsible, responsible_details: defaultResponsible ? [{ name: defaultResponsible, percentage: 100 }] : [], shared_with: value.kind === 'expense' ? value.shared_with : [], card_id: value.payment_method === 'credit_card' ? card.id : null, invoice_month: value.payment_method === 'credit_card' ? value.invoice_month : monthStart(value.spent_on.slice(0, 7)) } }
     })
     const invalid = prepared.filter((row) => row.error)
     if (invalid.length) { setCsvError(invalid.slice(0, 5).map((row) => `Linha ${row.line}: ${row.error}`).join(' · ')); return }
@@ -644,14 +701,24 @@ export default function App() {
       invoicePaidOn,
       outstandingTotal: unpaidPurchases.reduce((sum, item) => sum + Number(item.amount), 0),
       availableCalculated: card.credit_limit == null ? null : Number(card.credit_limit) - unpaidPurchases.reduce((sum, item) => sum + Number(item.amount), 0),
+      responsibleTotals: cardInvoices.reduce((totals, expense) => {
+        for (const person of responsibilityAmountsFor(expense, userDisplayName(session.user))) {
+          totals[person.name] = (totals[person.name] || 0) + person.amount
+        }
+        return totals
+      }, {}),
       pendingCount: cardInvoices.filter((item) => item.status === 'pending').length,
     }
   })
+  const cardMonthEntries = entries.filter((item) => item.kind === 'expense' && item.card_id && item.invoice_month?.startsWith(selectedMonth)).sort((a, b) => a.spent_on.localeCompare(b.spent_on))
+  const filteredCardMonthEntries = cardMonthEntries.filter((item) => cardResponsibleFilter === 'all' || responsibleNamesFor(item, userDisplayName(session.user)).includes(cardResponsibleFilter))
   const sortedMonthEntries = [...monthEntries].sort((a, b) => (a.status === 'pending' ? a.due_date : (a.settled_on || a.spent_on)).localeCompare(b.status === 'pending' ? b.due_date : (b.settled_on || b.spent_on)))
+  const responsibleOptions = [...new Set(entries.filter((item) => item.kind === 'expense').flatMap((item) => responsibleNamesFor(item, userDisplayName(session.user))))].sort((a, b) => a.localeCompare(b, 'pt-BR'))
   const filteredMonthEntries = sortedMonthEntries.filter((item) => {
     const query = entryFilters.search.trim().toLocaleLowerCase('pt-BR')
-    const searchable = [item.description, item.category, paymentLabel(item), item.amount].join(' ').toLocaleLowerCase('pt-BR')
-    return (!query || searchable.includes(query)) && (entryFilters.kind === 'all' || item.kind === entryFilters.kind) && (entryFilters.status === 'all' || item.status === entryFilters.status) && (entryFilters.category === 'all' || item.category === entryFilters.category) && (entryFilters.payment === 'all' || item.payment_method === entryFilters.payment)
+    const searchable = [item.description, item.category, paymentLabel(item), item.amount, ...responsibleNamesFor(item, userDisplayName(session.user))].join(' ').toLocaleLowerCase('pt-BR')
+    const responsibleMatch = entryFilters.responsible === 'all' || responsibleNamesFor(item, userDisplayName(session.user)).includes(entryFilters.responsible)
+    return (!query || searchable.includes(query)) && (entryFilters.kind === 'all' || item.kind === entryFilters.kind) && (entryFilters.status === 'all' || item.status === entryFilters.status) && (entryFilters.category === 'all' || item.category === entryFilters.category) && (entryFilters.payment === 'all' || item.payment_method === entryFilters.payment) && responsibleMatch
   })
   const potBalances = pots.map((pot) => ({ ...pot, balance: Number(pot.opening_balance) + movements.filter((item) => item.pot_id === pot.id).reduce((sum, item) => sum + (item.kind === 'deposit' ? Number(item.amount) : -Number(item.amount)), 0) }))
   const monthMovements = movements.filter((item) => item.moved_on?.startsWith(selectedMonth))
@@ -680,20 +747,20 @@ export default function App() {
   const visibleHistory = recentHistory.filter((row) => (historyAction === 'all' || row.action === historyAction) && (!historySearch || row.description.toLocaleLowerCase('pt-BR').includes(historySearch.toLocaleLowerCase('pt-BR'))))
   const globalSearchResults = globalSearchQuery.trim() ? entries.filter((item) => {
     const query = normalizeSearchText(globalSearchQuery)
-    const searchable = [item.description, item.category, paymentLabel(item), item.amount, item.notes, item.paid_by, item.responsible_person, ...(item.shared_with || []), item.cards?.name, item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on), item.invoice_month].map(normalizeSearchText).join(' ')
+    const searchable = [item.description, item.category, paymentLabel(item), item.amount, item.notes, item.paid_by, ...responsibleNamesFor(item, userDisplayName(session.user)), ...(item.shared_with || []), item.cards?.name, item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on), item.invoice_month].map(normalizeSearchText).join(' ')
     return searchable.includes(query)
   }).sort((a, b) => (b.status === 'pending' ? b.due_date : (b.settled_on || b.spent_on)).localeCompare(a.status === 'pending' ? a.due_date : (a.settled_on || a.spent_on))) : []
 
   function openGlobalSearchResult(item) {
     const relevantDate = item.card_id ? (item.invoice_month || item.spent_on) : (item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on))
-    setGlobalSearchOpen(false); setGlobalSearchQuery(''); setEntryFilters({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all' })
+    setGlobalSearchOpen(false); setGlobalSearchQuery(''); setEntryFilters({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all', responsible: 'all' })
     setSelectedMonth(relevantDate.slice(0, 7)); setActivePage(item.card_id ? 'cards' : 'month'); setHighlightedEntryId(item.id)
   }
 
   if (loading) return <main className="center-screen">Carregando…</main>
   if (!configured) return <SetupScreen />
-  if (passwordRecovery && session) return <AuthScreen mode="reset" setMode={setAuthMode} email={email} setEmail={setEmail} password={password} setPassword={setPassword} confirmPassword={confirmPassword} setConfirmPassword={setConfirmPassword} onSubmit={updateRecoveredPassword} message={message} onCancelRecovery={() => { setPasswordRecovery(false); setMessage('') }} />
-  if (!session) return <AuthScreen mode={authMode} setMode={(nextMode) => { setAuthMode(nextMode); setMessage(''); setPassword('') }} email={email} setEmail={setEmail} password={password} setPassword={setPassword} onSubmit={authMode === 'forgot' ? sendPasswordRecovery : handleAuth} message={message} />
+  if (passwordRecovery && session) return <AuthScreen mode="reset" setMode={setAuthMode} email={email} setEmail={setEmail} username={username} setUsername={setUsername} password={password} setPassword={setPassword} confirmPassword={confirmPassword} setConfirmPassword={setConfirmPassword} onSubmit={updateRecoveredPassword} message={message} onCancelRecovery={() => { setPasswordRecovery(false); setMessage('') }} />
+  if (!session) return <AuthScreen mode={authMode} setMode={(nextMode) => { setAuthMode(nextMode); setMessage(''); setPassword('') }} email={email} setEmail={setEmail} username={username} setUsername={setUsername} password={password} setPassword={setPassword} onSubmit={authMode === 'forgot' ? sendPasswordRecovery : handleAuth} message={message} />
 
   return <div className={`app-shell ${hideValues ? 'values-hidden' : ''}`}>
     <a className="skip-link" href="#main-content">Pular para o conteúdo</a>
@@ -707,7 +774,7 @@ export default function App() {
       <button className={`nav-item ${activePage === 'savings' ? 'active' : ''}`} aria-current={activePage === 'savings' ? 'page' : undefined} onClick={() => setActivePage('savings')}><PiggyBank size={17} /> Cofrinhos</button>
       <button className={`nav-item ${activePage === 'recurring' ? 'active' : ''}`} aria-current={activePage === 'recurring' ? 'page' : undefined} onClick={() => setActivePage('recurring')}><Repeat size={17} /> Recorrências</button>
       <div className="sidebar-tip"><div className="tip-icon"><CalendarDays size={17} /></div><b>Seu mês, sob controle</b><span>Planeje o que vai entrar e o que precisa sair.</span></div>
-      <div className="sidebar-user"><span className="user-avatar">{session.user.email?.[0]?.toUpperCase()}</span><span className="user-email">{session.user.email}</span><button className="icon-button" aria-label="Sair da conta" title="Sair" onClick={() => supabase.auth.signOut()}><LogOut size={17} /></button></div>
+      <div className="sidebar-user"><span className="user-avatar">{userDisplayName(session.user)[0]?.toUpperCase()}</span><span className="user-email"><b>{userDisplayName(session.user)}</b><small>{session.user.email}</small></span><button className="icon-button" aria-label="Alterar nome de usuário" title="Editar perfil" onClick={() => { setProfileName(session.user.user_metadata?.full_name || session.user.user_metadata?.name || ''); setProfileModal(true) }}><Pencil size={16}/></button><button className="icon-button" aria-label="Sair da conta" title="Sair" onClick={() => supabase.auth.signOut()}><LogOut size={17} /></button></div>
     </aside>
 
     <main className="main-content" id="main-content" tabIndex="-1">
@@ -716,6 +783,7 @@ export default function App() {
         <div className="header-actions">
           <div className="header-utility-actions">
             <button className="icon-button privacy-toggle" type="button" aria-label={hideValues ? 'Mostrar valores' : 'Ocultar valores'} aria-pressed={hideValues} title={hideValues ? 'Mostrar valores' : 'Ocultar valores'} onClick={() => setHideValues((hidden) => !hidden)}>{hideValues ? <Eye size={18}/> : <EyeOff size={18}/>}</button>
+            <button className="icon-button mobile-profile-button" type="button" aria-label="Editar nome de usuário" title="Editar perfil" onClick={() => { setProfileName(session.user.user_metadata?.full_name || session.user.user_metadata?.name || ''); setProfileModal(true) }}><Pencil size={16}/></button>
             <button className="global-search-trigger" type="button" onClick={() => { setGlobalSearchQuery(''); setGlobalSearchOpen(true) }}><Search size={16}/><span>Buscar lançamentos</span><kbd>/</kbd></button>
           </div>
           <div className="header-page-actions">
@@ -776,15 +844,15 @@ export default function App() {
 
         <section className="panel entries-panel">
           <PanelHeading title="Lançamentos do mês" subtitle={`${filteredMonthEntries.length} de ${sortedMonthEntries.length} registros em ${monthName(selectedMonth)}`} action={<button className="button subtle" onClick={openNewEntry}><Plus size={15} /> Adicionar</button>} />
-          <EntryFilters value={entryFilters} onChange={setEntryFilters} categories={allCategories} />
-          {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} highlightedEntryId={highlightedEntryId} attachments={attachments} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
+          <EntryFilters value={entryFilters} onChange={setEntryFilters} categories={allCategories} responsibleOptions={responsibleOptions} />
+          {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} highlightedEntryId={highlightedEntryId} attachments={attachments} defaultResponsible={userDisplayName(session.user)} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
         </section>
       </> : activePage === 'year' ? <>
         {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
       </> : activePage === 'cards' ? <>
         <section className="card-intro"><div><span className="eyebrow">ACOMPANHAMENTO DO MÊS</span><h2>Faturas de {monthName(selectedMonth)}</h2><p>Veja as compras lançadas em cada cartão e os dias de fechamento e vencimento.</p></div><div className="card-intro-total"><span>Total nas faturas</span><strong>{brl(monthCards.reduce((sum, item) => sum + item.invoiceTotal, 0))}</strong></div></section>
-        {cards.length ? <section className="managed-card-grid">{monthCards.map((item, index) => <article className="managed-card" key={item.id}><div className={`bank-card bank-card-${index % 4}`}><div className="bank-card-top"><span>MEU CONTROLE</span><CreditCard size={20} /></div><div className="bank-card-chip" /><b>{item.name}</b><div className="bank-card-footer"><span>FECHAMENTO <strong>{String(item.closing_day).padStart(2, '0')}</strong></span><span>VENCIMENTO <strong>{String(item.due_day).padStart(2, '0')}</strong></span></div></div><div className="managed-card-body"><div><span>Fatura de {monthName(selectedMonth, { month: 'long' })}</span><strong>{brl(item.invoiceTotal)}</strong></div><div className="invoice-status-row">{item.invoiceEntries.length ? <><span className={`status-pill ${item.invoicePaid ? 'settled' : 'pending'}`}>{item.invoicePaid ? 'Fatura paga' : 'Em aberto'}</span>{item.invoicePaidOn && <small>em {fmtDate(item.invoicePaidOn)}</small>}<button className={`button ${item.invoicePaid ? 'subtle' : 'primary'}`} onClick={() => toggleInvoicePaid(item)}>{item.invoicePaid ? 'Reabrir fatura' : 'Marcar fatura paga'}</button></> : <span className="invoice-empty-label">Sem compras neste mês</span>}</div><div className="card-limit-row"><div><span>Limite total</span><strong>{item.credit_limit == null ? '—' : brl(item.credit_limit)}</strong></div><div><span>Disponível agora</span><strong>{item.availableCalculated == null ? '—' : brl(item.availableCalculated)}</strong><small className="limit-explanation">Limite total menos compras pendentes</small></div></div><p>{item.pendingCount} compra{item.pendingCount === 1 ? '' : 's'} ainda pendente{item.pendingCount === 1 ? '' : 's'}</p><div className="card-actions"><button className="button subtle" onClick={() => openEditCard(item)}><Pencil size={14} /> Editar cartão</button><button className="icon-button danger" aria-label={`Excluir cartão ${item.name}`} title="Excluir cartão" onClick={() => deleteCard(item)}><Trash2 size={16} /></button></div></div></article>)}</section> : <section className="panel card-empty"><EmptyState title="Cadastre seu primeiro cartão" text="Depois você poderá acompanhar o total das compras por mês e a data de cada fatura." action={<button className="button primary" onClick={openNewCard}><Plus size={15} /> Cadastrar cartão</button>} /></section>}
-        <section className="panel entries-panel"><PanelHeading title="Compras nos cartões" subtitle={`Lançamentos associados à fatura de ${monthName(selectedMonth)}`} /><EntryTable entries={entries.filter((item) => item.kind === 'expense' && item.card_id && item.invoice_month?.startsWith(selectedMonth)).sort((a, b) => a.spent_on.localeCompare(b.spent_on))} highlightedEntryId={highlightedEntryId} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} attachments={attachments} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} emptyText="Não há compras lançadas para as faturas deste mês." /></section>
+        {cards.length ? <section className="managed-card-grid">{monthCards.map((item, index) => <article className="managed-card" key={item.id}><div className={`bank-card bank-card-${index % 4}`}><div className="bank-card-top"><span>MEU CONTROLE</span><CreditCard size={20} /></div><div className="bank-card-chip" /><b>{item.name}</b><div className="bank-card-footer"><span>FECHAMENTO <strong>{String(item.closing_day).padStart(2, '0')}</strong></span><span>VENCIMENTO <strong>{String(item.due_day).padStart(2, '0')}</strong></span></div></div><div className="managed-card-body"><div><span>Fatura de {monthName(selectedMonth, { month: 'long' })}</span><strong>{brl(item.invoiceTotal)}</strong></div><div className="invoice-status-row">{item.invoiceEntries.length ? <><span className={`status-pill ${item.invoicePaid ? 'settled' : 'pending'}`}>{item.invoicePaid ? 'Fatura paga' : 'Em aberto'}</span>{item.invoicePaidOn && <small>em {fmtDate(item.invoicePaidOn)}</small>}<button className={`button ${item.invoicePaid ? 'subtle' : 'primary'}`} onClick={() => toggleInvoicePaid(item)}>{item.invoicePaid ? 'Reabrir fatura' : 'Marcar fatura paga'}</button></> : <span className="invoice-empty-label">Sem compras neste mês</span>}</div>{Object.keys(item.responsibleTotals).length > 0 && <div className="invoice-responsible-summary"><b>Por responsável</b>{Object.entries(item.responsibleTotals).sort((a,b)=>b[1]-a[1]).map(([name,total])=><div key={name}><span>{name}</span><strong>{brl(total)}</strong></div>)}</div>}<div className="card-limit-row"><div><span>Limite total</span><strong>{item.credit_limit == null ? '—' : brl(item.credit_limit)}</strong></div><div><span>Disponível agora</span><strong>{item.availableCalculated == null ? '—' : brl(item.availableCalculated)}</strong><small className="limit-explanation">Limite total menos compras pendentes</small></div></div><p>{item.pendingCount} compra{item.pendingCount === 1 ? '' : 's'} ainda pendente{item.pendingCount === 1 ? '' : 's'}</p><div className="card-actions"><button className="button subtle" onClick={() => openEditCard(item)}><Pencil size={14} /> Editar cartão</button><button className="icon-button danger" aria-label={`Excluir cartão ${item.name}`} title="Excluir cartão" onClick={() => deleteCard(item)}><Trash2 size={16} /></button></div></div></article>)}</section> : <section className="panel card-empty"><EmptyState title="Cadastre seu primeiro cartão" text="Depois você poderá acompanhar o total das compras por mês e a data de cada fatura." action={<button className="button primary" onClick={openNewCard}><Plus size={15} /> Cadastrar cartão</button>} /></section>}
+        <section className="panel entries-panel"><PanelHeading title="Compras nos cartões" subtitle={`Lançamentos associados à fatura de ${monthName(selectedMonth)}`} /><label className="invoice-filter"><Users size={14}/><span>Responsável</span><select aria-label="Filtrar compras por responsável" value={cardResponsibleFilter} onChange={(event) => setCardResponsibleFilter(event.target.value)}><option value="all">Todos</option>{responsibleOptions.map((name) => <option key={name}>{name}</option>)}</select></label><EntryTable entries={filteredCardMonthEntries} highlightedEntryId={highlightedEntryId} defaultResponsible={userDisplayName(session.user)} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} attachments={attachments} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} emptyText={cardMonthEntries.length && cardResponsibleFilter !== 'all' ? 'Nenhuma compra corresponde a este responsável.' : 'Não há compras lançadas para as faturas deste mês.'} /></section>
       </> : activePage === 'savings' ? <>
         {savingsGoals.length > 0 && <section className="panel goal-summary-panel"><PanelHeading title="Resumo das metas" subtitle={`${savingsGoals.length} cofrinho${savingsGoals.length === 1 ? '' : 's'} com objetivo definido`}/><div className="goal-summary-grid"><div><span>Guardado para as metas</span><strong>{brl(totalGoalSaved)}</strong></div><div><span>Falta para alcançar</span><strong>{brl(totalGoalRemaining)}</strong></div><div><span>Valor total das metas</span><strong>{brl(totalGoalAmount)}</strong></div><div className="goal-summary-progress"><div><span>Progresso geral</span><b>{Math.round(totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}%</b></div><i role="progressbar" aria-label="Progresso geral das metas" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}><span style={{width:`${Math.min(100,totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}%`}}/></i></div></div></section>}
         <section className="savings-hero"><div><span className="hero-kicker">TOTAL GUARDADO</span><strong>{brl(potBalances.reduce((sum, pot) => sum + pot.balance, 0))}</strong><span className="hero-caption">Saldo somado dos seus cofrinhos</span></div><div className="savings-month"><span>Movimentações em {monthName(selectedMonth)}</span><b className="income-text">+ {brl(monthDeposits)} guardados</b><b className="withdrawal-text">− {brl(monthWithdrawals)} retirados</b></div><PiggyBank className="savings-hero-icon" size={35} /></section>
@@ -800,6 +868,7 @@ export default function App() {
       </>}
     </main>
 
+    {profileModal && <ProfileModal value={profileName} onChange={setProfileName} onClose={() => setProfileModal(false)} onSubmit={saveProfileName} /> }
     {entryModal && <EntryModal title={editingEntryId ? 'Editar lançamento' : 'Novo lançamento'} value={entryForm} cards={cards} customCategories={userCategories} onChange={setEntryForm} onClose={() => setEntryModal(false)} onSubmit={saveEntry} />}
     {csvModal && <CsvImportModal rows={csvRows} error={csvError} busy={csvBusy} onFile={importCsvFile} onTemplate={downloadCsvTemplate} onImport={importCsvRows} onClose={() => setCsvModal(false)} />}
     {historyModal && <HistoryModal item={historyModal} rows={historyRows} onClose={() => setHistoryModal(null)} />}
@@ -838,9 +907,9 @@ function EmptyState({ title, text, action }) {
   return <div className="empty-state"><span className="empty-icon"><Wallet size={19} /></span><b>{title}</b><span>{text}</span>{action}</div>
 }
 
-function EntryTable({ entries, onEdit, onDelete, onSettle, onHistory, onAttachments, onShares, highlightedEntryId, attachments = [], emptyText = 'Não há lançamentos neste mês.' }) {
+function EntryTable({ entries, onEdit, onDelete, onSettle, onHistory, onAttachments, onShares, highlightedEntryId, attachments = [], defaultResponsible = 'Eu', emptyText = 'Não há lançamentos neste mês.' }) {
   if (!entries.length) return <EmptyState title="Nada para mostrar" text={emptyText} />
-  return <div className="table-wrap"><table className="entry-table"><thead><tr><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Data / vencimento</th><th>Situação</th><th className="align-right">Valor</th><th aria-label="Ações" /></tr></thead><tbody>{entries.map((item) => { const displayDate = item.card_id ? item.spent_on : item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on); return <tr key={item.id} data-entry-id={item.id} className={highlightedEntryId === item.id ? 'entry-highlighted' : ''}><td><div className="entry-name"><span className={`entry-kind-icon ${item.kind}`} title={item.kind === 'income' ? 'Receita' : 'Despesa'}>{item.kind === 'income' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><b>{item.description}</b><small>{item.installment_number ? `Parcela ${item.installment_number} de ${item.installment_count} · ` : ''}{item.kind === 'income' ? 'Receita' : 'Despesa'}{item.paid_by ? ` · Pago por ${item.paid_by}` : ''}{item.responsible_person ? ` · Responsável: ${item.responsible_person}` : ''}{item.shared_with?.length ? ` · Rateio: ${shareBreakdown(item)}` : ''}{item.notes ? ` · ${item.notes}` : ''}</small></span></div></td><td>{item.category}</td><td>{item.kind === 'income' ? '—' : paymentLabel(item)}</td><td>{fmtDate(displayDate)}</td><td><span className={`status-pill ${item.status}`}>{item.status === 'pending' ? 'Pendente' : item.kind === 'income' ? 'Recebida' : 'Paga'}</span></td><td className={`align-right amount ${item.kind === 'income' ? 'income-text' : ''}`}>{item.kind === 'income' ? '+' : '−'} {brl(item.amount)}</td><td><div className="row-actions">{item.shared_with?.length > 0 && <button className="icon-button" aria-label={`Controlar acertos do rateio de ${item.description}`} title="Acerto do rateio" onClick={() => onShares(item)}><Users size={15}/></button>}{item.status === 'pending' && <button className="icon-button" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} title={item.kind === 'income' ? 'Marcar recebida' : 'Marcar paga'} onClick={() => onSettle(item)}><Check size={15} /></button>}{attachments.some((file) => file.expense_id === item.id) && <button className="icon-button" aria-label={`Abrir comprovantes de ${item.description}`} title="Comprovantes" onClick={() => onAttachments(item)}><Paperclip size={15}/></button>}<button className="icon-button" aria-label={`Ver histórico de ${item.description}`} title="Histórico" onClick={() => onHistory(item)}><History size={15}/></button><button className="icon-button" aria-label={`Editar ${item.description}`} title="Editar" onClick={() => onEdit(item)}><Pencil size={15} /></button><button className="icon-button danger" aria-label={`Excluir ${item.description}`} title="Excluir" onClick={() => onDelete(item)}><Trash2 size={15} /></button></div></td></tr> })}</tbody></table></div>
+  return <div className="table-wrap"><table className="entry-table"><thead><tr><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Data / vencimento</th><th>Situação</th><th className="align-right">Valor</th><th aria-label="Ações" /></tr></thead><tbody>{entries.map((item) => { const displayDate = item.card_id ? item.spent_on : item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on); const responsibleLabel = responsibleDetailsFor(item, defaultResponsible).map((person) => `${person.name} (${Number(person.percentage)}%)`).join(', '); return <tr key={item.id} data-entry-id={item.id} className={highlightedEntryId === item.id ? 'entry-highlighted' : ''}><td><div className="entry-name"><span className={`entry-kind-icon ${item.kind}`} title={item.kind === 'income' ? 'Receita' : 'Despesa'}>{item.kind === 'income' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><b>{item.description}</b><small>{item.installment_number ? `Parcela ${item.installment_number} de ${item.installment_count} · ` : ''}{item.kind === 'income' ? 'Receita' : 'Despesa'}{item.paid_by ? ` · Pago por ${item.paid_by}` : ''}{item.kind === 'expense' ? ` · Responsável: ${responsibleLabel}` : ''}{item.shared_with?.length ? ` · Rateio: ${shareBreakdown(item)}` : ''}{item.notes ? ` · ${item.notes}` : ''}</small></span></div></td><td>{item.category}</td><td>{item.kind === 'income' ? '—' : paymentLabel(item)}</td><td>{fmtDate(displayDate)}</td><td><span className={`status-pill ${item.status}`}>{item.status === 'pending' ? 'Pendente' : item.kind === 'income' ? 'Recebida' : 'Paga'}</span></td><td className={`align-right amount ${item.kind === 'income' ? 'income-text' : ''}`}>{item.kind === 'income' ? '+' : '−'} {brl(item.amount)}</td><td><div className="row-actions">{item.shared_with?.length > 0 && <button className="icon-button" aria-label={`Controlar acertos do rateio de ${item.description}`} title="Acerto do rateio" onClick={() => onShares(item)}><Users size={15}/></button>}{item.status === 'pending' && <button className="icon-button" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} title={item.kind === 'income' ? 'Marcar recebida' : 'Marcar paga'} onClick={() => onSettle(item)}><Check size={15} /></button>}{attachments.some((file) => file.expense_id === item.id) && <button className="icon-button" aria-label={`Abrir comprovantes de ${item.description}`} title="Comprovantes" onClick={() => onAttachments(item)}><Paperclip size={15}/></button>}<button className="icon-button" aria-label={`Ver histórico de ${item.description}`} title="Histórico" onClick={() => onHistory(item)}><History size={15}/></button><button className="icon-button" aria-label={`Editar ${item.description}`} title="Editar" onClick={() => onEdit(item)}><Pencil size={15} /></button><button className="icon-button danger" aria-label={`Excluir ${item.description}`} title="Excluir" onClick={() => onDelete(item)}><Trash2 size={15} /></button></div></td></tr> })}</tbody></table></div>
 }
 
 function EntryModal({ title, value, cards, customCategories = [], onChange, onClose, onSubmit }) {
@@ -851,6 +920,12 @@ function EntryModal({ title, value, cards, customCategories = [], onChange, onCl
     const names = [...new Set(text.split(/[,;]/).map((name) => name.trim()).filter(Boolean))]
     const shares = names.map((name) => value.share_details?.find((share) => share.name === name) || { name, amount: '', settled: false })
     onChange({ ...value, shared_with: text, share_details: shares })
+  }
+  const updateResponsibles = (text) => {
+    const names = [...new Set(text.split(/[,;]/).map((name) => name.trim()).filter(Boolean))]
+    const percentage = names.length ? Math.round(10000 / names.length) / 100 : 0
+    const shares = names.map((name, index) => ({ name, percentage: index === names.length - 1 ? 100 - percentage * (names.length - 1) : percentage }))
+    onChange({ ...value, responsible_person: text, responsible_details: shares })
   }
   const categories = [...(value.kind === 'income' ? incomeCategories : expenseCategories), ...customCategories.filter((item) => item.kind === value.kind).map((item) => item.name)]
   return <Modal title={title} onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
@@ -863,7 +938,7 @@ function EntryModal({ title, value, cards, customCategories = [], onChange, onCl
     {value.kind === 'expense' && value.payment_method === 'credit_card' && <label>Cartão de crédito<select required value={value.card_id} onChange={(event) => set('card_id', event.target.value)}><option value="">Escolha o cartão</option>{cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label>}
     {value.kind === 'expense' && value.payment_method === 'credit_card' && value.card_id && <><label>Mês da primeira fatura<input type="month" required value={value.invoice_month} onChange={(event) => set('invoice_month', event.target.value)} /></label>{!title.startsWith('Editar') && <><label>Parcelas<select value={value.installment_count || '1'} onChange={event=>set('installment_count',event.target.value)}>{Array.from({length:24},(_,i)=>i+1).map(n=><option key={n} value={n}>{n===1?'À vista':`${n} parcelas`}</option>)}</select></label>{Number(value.installment_count)>1&&<p className="modal-help">O total será dividido entre as faturas mensais; as parcelas serão criadas como pendentes.</p>}</>}</>}
     {value.status === 'settled' && <label>Data de pagamento / recebimento<input type="date" value={value.settled_on || value.spent_on} onChange={(event) => set('settled_on', event.target.value)} /></label>}
-    {value.kind === 'expense' && <><label>Responsável pela despesa<input maxLength="80" value={value.responsible_person || ''} onChange={(event) => set('responsible_person', event.target.value)} placeholder="Ex.: David" /></label><p className="modal-help">Responsável é diferente de quem pagou. Em uma compra parcelada, este nome vale para todas as parcelas.</p><div className="rateio-label"><Users size={15}/> Rateio entre pessoas</div><div className="modal-form-two"><label>Quem pagou<input maxLength="80" value={value.paid_by || ''} onChange={(event) => set('paid_by', event.target.value)} placeholder="Ex.: David" /></label><label>Participantes<input maxLength="240" value={value.shared_with || ''} onChange={(event) => updateParticipants(event.target.value)} placeholder="Nomes separados por vírgula" /></label></div>{participantNames.length > 0 && <div className="share-editor">{participantNames.map((name) => <label key={name}>{name} · parte (R$)<input type="number" min="0" step="0.01" value={value.share_details?.find((share) => share.name === name)?.amount ?? ''} onChange={event=>onChange({...value,share_details:(value.share_details||[]).map(share=>share.name===name?{...share,amount:event.target.value}:share)})} placeholder="Em branco = divisão igual" /></label>)}</div>}<p className="modal-help">Deixe todas as partes em branco para dividir igualmente. Se informar valores, preencha todos e a soma precisa bater com o total.</p></>}
+    {value.kind === 'expense' && <><label>Responsável(is) pela despesa<input maxLength="240" value={value.responsible_person || ''} onChange={(event) => updateResponsibles(event.target.value)} placeholder="Ex.: David, Ana" /></label>{(value.responsible_details || []).length > 0 && <div className="responsible-editor">{value.responsible_details.map((person) => <label key={person.name}>{person.name} · responsabilidade (%)<input type="number" min="0" max="100" step="0.01" value={person.percentage} onChange={(event) => onChange({ ...value, responsible_details: value.responsible_details.map((share) => share.name === person.name ? { ...share, percentage: event.target.value } : share) })} /></label>)}</div>}<p className="modal-help">Se deixar vazio, você será o responsável. Para dividir, informe os nomes separados por vírgula e distribua 100% entre eles. Em compras parceladas, os percentuais valem para todas as parcelas. Isso é separado de quem pagou e do rateio de reembolso.</p><div className="rateio-label"><Users size={15}/> Rateio entre pessoas</div><div className="modal-form-two"><label>Quem pagou<input maxLength="80" value={value.paid_by || ''} onChange={(event) => set('paid_by', event.target.value)} placeholder="Ex.: David" /></label><label>Participantes<input maxLength="240" value={value.shared_with || ''} onChange={(event) => updateParticipants(event.target.value)} placeholder="Nomes separados por vírgula" /></label></div>{participantNames.length > 0 && <div className="share-editor">{participantNames.map((name) => <label key={name}>{name} · parte (R$)<input type="number" min="0" step="0.01" value={value.share_details?.find((share) => share.name === name)?.amount ?? ''} onChange={event=>onChange({...value,share_details:(value.share_details||[]).map(share=>share.name===name?{...share,amount:event.target.value}:share)})} placeholder="Em branco = divisão igual" /></label>)}</div>}<p className="modal-help">Deixe todas as partes em branco para dividir igualmente. Se informar valores, preencha todos e a soma precisa bater com o total.</p></>}
     <label>Observações (opcional)<textarea maxLength="1000" rows="2" value={value.notes || ''} onChange={(event) => set('notes', event.target.value)} placeholder="Detalhes ou referência do lançamento" /></label>
     <label>Anexar comprovantes (PDF, JPG, PNG ou WebP · até 10 MB cada)<input type="file" multiple accept="application/pdf,image/jpeg,image/png,image/webp" onChange={(event) => { const files = [...event.target.files]; const invalid = files.find((file) => file.size > 10 * 1024 * 1024 || !['application/pdf','image/jpeg','image/png','image/webp'].includes(file.type)); if (invalid) { setAttachmentError('Escolha PDF, JPG, PNG ou WebP com até 10 MB por arquivo.'); onChange({ ...value, attachmentFiles: [] }); event.target.value = ''; return } setAttachmentError(''); set('attachmentFiles', files) }} />{attachmentError && <small className="form-error">{attachmentError}</small>}{value.attachmentFiles?.length > 0 && <small>{value.attachmentFiles.map((file) => file.name).join(', ')}</small>}</label>
     <div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15} /> Salvar lançamento</button></div>
@@ -910,10 +985,10 @@ function BudgetModal({ value, categories, onChange, onClose, onSubmit }) {
   </form></Modal>
 }
 
-function EntryFilters({ value, onChange, categories }) {
+function EntryFilters({ value, onChange, categories, responsibleOptions = [] }) {
   const set = (key, next) => onChange({ ...value, [key]: next })
-  const active = value.search || value.kind !== 'all' || value.status !== 'all' || value.category !== 'all' || value.payment !== 'all'
-  return <div className="entry-filters"><label className="search-field"><Search size={16}/><input aria-label="Buscar por descrição, categoria, forma de pagamento ou valor" placeholder="Buscar lançamento" value={value.search} onChange={(event) => set('search', event.target.value)}/></label><label><SlidersHorizontal size={14}/><select aria-label="Filtrar por tipo" value={value.kind} onChange={(event) => set('kind', event.target.value)}><option value="all">Todos os tipos</option><option value="expense">Despesas</option><option value="income">Receitas</option></select></label><label><select aria-label="Filtrar por situação" value={value.status} onChange={(event) => set('status', event.target.value)}><option value="all">Todas as situações</option><option value="pending">Pendentes</option><option value="settled">Pagas / recebidas</option></select></label><label><select aria-label="Filtrar por categoria" value={value.category} onChange={(event) => set('category', event.target.value)}><option value="all">Todas as categorias</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label><select aria-label="Filtrar por forma de pagamento" value={value.payment} onChange={(event) => set('payment', event.target.value)}><option value="all">Todas as formas</option><option value="pix">Pix</option><option value="cash">Dinheiro</option><option value="debit_card">Débito</option><option value="credit_card">Crédito</option><option value="other">Outro</option></select></label>{active && <button type="button" className="button subtle clear-filters" onClick={() => onChange({search:'',kind:'all',status:'all',category:'all',payment:'all'})}>Limpar filtros</button>}</div>
+  const active = value.search || value.kind !== 'all' || value.status !== 'all' || value.category !== 'all' || value.payment !== 'all' || value.responsible !== 'all'
+  return <div className="entry-filters"><label className="search-field"><Search size={16}/><input aria-label="Buscar por descrição, categoria, forma de pagamento ou valor" placeholder="Buscar lançamento" value={value.search} onChange={(event) => set('search', event.target.value)}/></label><label><SlidersHorizontal size={14}/><select aria-label="Filtrar por tipo" value={value.kind} onChange={(event) => set('kind', event.target.value)}><option value="all">Todos os tipos</option><option value="expense">Despesas</option><option value="income">Receitas</option></select></label><label><select aria-label="Filtrar por situação" value={value.status} onChange={(event) => set('status', event.target.value)}><option value="all">Todas as situações</option><option value="pending">Pendentes</option><option value="settled">Pagas / recebidas</option></select></label><label><select aria-label="Filtrar por categoria" value={value.category} onChange={(event) => set('category', event.target.value)}><option value="all">Todas as categorias</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label><select aria-label="Filtrar por forma de pagamento" value={value.payment} onChange={(event) => set('payment', event.target.value)}><option value="all">Todas as formas</option><option value="pix">Pix</option><option value="cash">Dinheiro</option><option value="debit_card">Débito</option><option value="credit_card">Crédito</option><option value="other">Outro</option></select></label><label><Users size={14}/><select aria-label="Filtrar por responsável" value={value.responsible || 'all'} onChange={(event) => set('responsible', event.target.value)}><option value="all">Todos responsáveis</option>{responsibleOptions.map((name) => <option key={name}>{name}</option>)}</select></label>{active && <button type="button" className="button subtle clear-filters" onClick={() => onChange({search:'',kind:'all',status:'all',category:'all',payment:'all',responsible:'all'})}>Limpar filtros</button>}</div>
 }
 
 function GlobalSearchModal({query,onQueryChange,results,onSelect,onClose}) {
@@ -975,7 +1050,11 @@ function Modal({ title, onClose, children, className = '' }) {
   return <div className={`modal-backdrop ${closing ? 'is-closing' : ''}`} onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}><section className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={title}><div className="modal-heading"><h2>{title}</h2><button className="icon-button" title="Fechar" aria-label="Fechar modal" onClick={close}><X size={18} /></button></div>{children}</section></div>
 }
 
-function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, confirmPassword = '', setConfirmPassword, onSubmit, message, onCancelRecovery }) {
+function ProfileModal({ value, onChange, onClose, onSubmit }) {
+  return <Modal title="Editar nome de usuário" onClose={onClose}><form className="modal-form" onSubmit={onSubmit}><label>Nome de usuário<input type="text" required minLength="2" maxLength="40" autoComplete="nickname" value={value} onChange={(event) => onChange(event.target.value)} placeholder="Como devemos chamar você?" /></label><p className="modal-help">Esse nome aparece no seu perfil e como responsável padrão nas despesas que você registrar.</p><div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15}/> Salvar nome</button></div></form></Modal>
+}
+
+function AuthScreen({ mode, setMode, email, setEmail, username = '', setUsername, password, setPassword, confirmPassword = '', setConfirmPassword, onSubmit, message, onCancelRecovery }) {
   const isLogin = mode === 'login'
   const isForgot = mode === 'forgot'
   const isReset = mode === 'reset'
@@ -983,7 +1062,7 @@ function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, con
   const heading = isReset ? 'Defina sua nova senha' : isForgot ? 'Recupere seu acesso' : isLogin ? 'Bem-vindo de volta' : 'Crie sua conta'
   const description = isReset ? 'Escolha uma senha nova para voltar a acessar sua conta.' : isForgot ? 'Informe o e-mail da sua conta e enviaremos um link de redefinição.' : isLogin ? 'Entre para continuar cuidando do seu dinheiro.' : 'Comece a organizar suas contas em poucos passos.'
   const submitLabel = isReset ? 'Salvar nova senha' : isForgot ? 'Enviar link de recuperação' : isLogin ? 'Entrar na minha conta' : 'Criar minha conta'
-  return <main className="auth-screen"><div className="auth-layout"><aside className="auth-showcase"><div className="auth-showcase-brand"><span className="brand-mark"><Wallet size={21}/></span><span>meu<span className="brand-light">controle</span></span></div><div className="auth-showcase-copy"><span className="auth-kicker"><i/> SUA VIDA FINANCEIRA, MAIS CLARA</span><h2>Seu dinheiro merece<br/>um plano <em>simples.</em></h2><p>Organize contas, acompanhe cartões e veja para onde seu dinheiro está indo, tudo em um só lugar.</p><div className="auth-features"><span><i>✓</i> Visão clara do seu mês</span><span><i>✓</i> Seus dados, só seus</span></div></div><div className="auth-visual" aria-hidden="true"><div className="auth-visual-top"><span><i/><i/><i/></span><small>SEU MÊS EM FOCO</small><CalendarDays size={16}/></div><div className="auth-visual-body"><div className="auth-visual-label"><span>Entradas</span><span>Contas</span><span>Cofrinhos</span></div><div className="auth-chart"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><div className="auth-chart-base"/></div><div className="auth-visual-footer"><span><b/> Planejar fica mais leve</span><ArrowUpRight size={17}/></div></div><small className="auth-showcase-foot">CONTROLE NO SEU RITMO · PRIVACIDADE EM PRIMEIRO LUGAR</small></aside><section className="auth-card"><div className="auth-mode-content" key={mode}><div className="auth-card-top"><span className="auth-card-icon"><Wallet size={19}/></span><span>{isReset ? 'ATUALIZAÇÃO SEGURA' : 'ACESSO SEGURO'}</span></div><p className="eyebrow">SEU ESPAÇO FINANCEIRO</p><h1>{heading}</h1><p className="auth-copy">{description}</p><form onSubmit={onSubmit}>{!isReset && <label>E-mail<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@email.com" /></label>}{!isForgot && <label>{isReset ? 'Nova senha' : 'Senha'}<input type="password" required minLength="6" autoComplete={isLogin ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Mínimo de 6 caracteres" /></label>}{isReset && <label>Confirmar nova senha<input type="password" required minLength="6" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword?.(event.target.value)} placeholder="Digite a nova senha novamente" /></label>}{isLogin && <button className="auth-forgot" type="button" onClick={() => setMode('forgot')}>Esqueci minha senha</button>}{message && <div className="notice" role="status">{message}</div>}<button className="button primary auth-submit">{submitLabel}<ArrowRight size={17}/></button></form>{isReset ? <p className="auth-toggle">Já conseguiu redefinir? <button type="button" onClick={onCancelRecovery}>Voltar ao aplicativo</button></p> : <p className="auth-toggle">{isForgot ? 'Lembrou sua senha?' : isLogin ? 'Ainda não tem conta?' : 'Já tem uma conta?'} <button type="button" onClick={isForgot ? () => setMode('login') : switchMode}>{isForgot ? 'Voltar ao login' : isLogin ? 'Criar conta' : 'Fazer login'}</button></p>}<p className="privacy-note"><span>◈</span> Cada conta acessa somente os próprios dados.</p></div></section></div></main>
+  return <main className="auth-screen"><div className="auth-layout"><aside className="auth-showcase"><div className="auth-showcase-brand"><span className="brand-mark"><Wallet size={21}/></span><span>meu<span className="brand-light">controle</span></span></div><div className="auth-showcase-copy"><span className="auth-kicker"><i/> SUA VIDA FINANCEIRA, MAIS CLARA</span><h2>Seu dinheiro merece<br/>um plano <em>simples.</em></h2><p>Organize contas, acompanhe cartões e veja para onde seu dinheiro está indo, tudo em um só lugar.</p><div className="auth-features"><span><i>✓</i> Visão clara do seu mês</span><span><i>✓</i> Seus dados, só seus</span></div></div><div className="auth-visual" aria-hidden="true"><div className="auth-visual-top"><span><i/><i/><i/></span><small>SEU MÊS EM FOCO</small><CalendarDays size={16}/></div><div className="auth-visual-body"><div className="auth-visual-label"><span>Entradas</span><span>Contas</span><span>Cofrinhos</span></div><div className="auth-chart"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><div className="auth-chart-base"/></div><div className="auth-visual-footer"><span><b/> Planejar fica mais leve</span><ArrowUpRight size={17}/></div></div><small className="auth-showcase-foot">CONTROLE NO SEU RITMO · PRIVACIDADE EM PRIMEIRO LUGAR</small></aside><section className="auth-card"><div className="auth-mode-content" key={mode}><div className="auth-card-top"><span className="auth-card-icon"><Wallet size={19}/></span><span>{isReset ? 'ATUALIZAÇÃO SEGURA' : 'ACESSO SEGURO'}</span></div><p className="eyebrow">SEU ESPAÇO FINANCEIRO</p><h1>{heading}</h1><p className="auth-copy">{description}</p><form onSubmit={onSubmit}>{!isReset && <label>E-mail<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@email.com" /></label>}{mode === 'signup' && <label>Nome de usuário<input type="text" required minLength="2" maxLength="40" autoComplete="nickname" value={username} onChange={(event) => setUsername?.(event.target.value)} placeholder="Como devemos chamar você?" /></label>}{!isForgot && <label>{isReset ? 'Nova senha' : 'Senha'}<input type="password" required minLength="6" autoComplete={isLogin ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Mínimo de 6 caracteres" /></label>}{isReset && <label>Confirmar nova senha<input type="password" required minLength="6" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword?.(event.target.value)} placeholder="Digite a nova senha novamente" /></label>}{isLogin && <button className="auth-forgot" type="button" onClick={() => setMode('forgot')}>Esqueci minha senha</button>}{message && <div className="notice" role="status">{message}</div>}<button className="button primary auth-submit">{submitLabel}<ArrowRight size={17}/></button></form>{isReset ? <p className="auth-toggle">Já conseguiu redefinir? <button type="button" onClick={onCancelRecovery}>Voltar ao aplicativo</button></p> : <p className="auth-toggle">{isForgot ? 'Lembrou sua senha?' : isLogin ? 'Ainda não tem conta?' : 'Já tem uma conta?'} <button type="button" onClick={isForgot ? () => setMode('login') : switchMode}>{isForgot ? 'Voltar ao login' : isLogin ? 'Criar conta' : 'Fazer login'}</button></p>}<p className="privacy-note"><span>◈</span> Cada conta acessa somente os próprios dados.</p></div></section></div></main>
 }
 
 function authErrorMessage(error, action) {

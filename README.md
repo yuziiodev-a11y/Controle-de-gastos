@@ -10,6 +10,8 @@ Aplicação para registrar gastos manualmente e acompanhar o total de cada fatur
 
 O Supabase fornece o backend gerenciado, então não há servidor Node separado.
 
+No cadastro, informe também um nome de usuário (2 a 40 caracteres). Ele é salvo no perfil de autenticação e passa a ser o nome padrão exibido no aplicativo e nas responsabilidades das despesas. Contas existentes podem alterá-lo pelo ícone de edição ao lado do perfil; no celular, use o ícone de edição no cabeçalho.
+
 ## Iniciar
 
 1. Crie um projeto em [Supabase](https://supabase.com/dashboard).
@@ -114,3 +116,5 @@ Depois da migração 009, execute `supabase/migrations/202610160010_custom_split
 #### Ativar o campo de responsável (migração 011)
 
 Execute `supabase/migrations/202610160011_expense_responsible_person.sql` no SQL Editor do Supabase depois da migração 010. O campo também fica disponível para busca global e aparece nos detalhes de cada lançamento.
+
+Para usar mais de um responsável e a divisão percentual, execute também `supabase/migrations/202610160012_responsible_person_splits.sql`. Se nenhum responsável for informado, o usuário logado será atribuído automaticamente. Os percentuais devem somar 100% e são aplicados a todas as parcelas. A visão mensal permite filtrar pelo responsável; cada cartão mostra subtotais da fatura por pessoa.

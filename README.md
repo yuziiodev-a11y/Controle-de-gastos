@@ -118,3 +118,5 @@ Depois da migração 009, execute `supabase/migrations/202610160010_custom_split
 Execute `supabase/migrations/202610160011_expense_responsible_person.sql` no SQL Editor do Supabase depois da migração 010. O campo também fica disponível para busca global e aparece nos detalhes de cada lançamento.
 
 Para usar mais de um responsável e a divisão percentual, execute também `supabase/migrations/202610160012_responsible_person_splits.sql`. Se nenhum responsável for informado, o usuário logado será atribuído automaticamente. Os percentuais devem somar 100% e são aplicados a todas as parcelas. A visão mensal permite filtrar pelo responsável; cada cartão mostra subtotais da fatura por pessoa.
+
+Para escolher uma cor para o banner de cada cartão, execute `supabase/migrations/202610160013_card_banner_colors.sql` no SQL Editor do Supabase depois da migração 012. Em seguida, edite um cartão e escolha uma das cores disponíveis; a prévia do banner é atualizada na hora.

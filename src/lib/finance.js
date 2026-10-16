@@ -104,7 +104,22 @@ export function estimateCdiBalance(pot, movements, rates, asOf = localDate()) {
     .filter((movement) => movement.pot_id === pot.id && movement.moved_on <= asOf)
     .slice()
     .sort((a, b) => a.moved_on.localeCompare(b.moved_on) || a.created_at?.localeCompare(b.created_at || '') || a.id.localeCompare(b.id))
-  const applicableRates = rates.filter((rate) => rate.date >= startedOn && rate.date <= asOf).slice().sort((a, b) => a.date.localeCompare(b.date))
+  const availableRates = rates.filter((rate) => rate.date <= asOf).slice().sort((a, b) => a.date.localeCompare(b.date))
+  const applicableRates = availableRates.filter((rate) => rate.date >= startedOn)
+  const lastPublishedRate = availableRates.at(-1) || null
+  const asOfDate = new Date(`${asOf}T12:00:00Z`)
+  const lastRateDate = lastPublishedRate ? new Date(`${lastPublishedRate.date}T12:00:00Z`) : null
+  const calendarDaysSinceRate = lastRateDate ? Math.round((asOfDate - lastRateDate) / 86400000) : Infinity
+  const isBusinessWeekday = ![0, 6].includes(asOfDate.getUTCDay())
+  const projectedForToday = Boolean(
+    lastPublishedRate
+    && lastPublishedRate.date < asOf
+    && isBusinessWeekday
+    && calendarDaysSinceRate <= 4,
+  )
+  if (projectedForToday) {
+    applicableRates.push({ ...lastPublishedRate, date: asOf, projected: true })
+  }
   let balance = Number(pot.opening_balance || 0)
   let flowIndex = 0
   const applyFlow = (flow) => { balance += (flow.kind === 'deposit' ? 1 : -1) * Number(flow.amount) }
@@ -117,6 +132,12 @@ export function estimateCdiBalance(pot, movements, rates, asOf = localDate()) {
   while (flowIndex < flows.length) applyFlow(flows[flowIndex++])
 
   const principal = Number(pot.opening_balance || 0) + flows.reduce((sum, flow) => sum + (flow.kind === 'deposit' ? 1 : -1) * Number(flow.amount), 0)
-  return { balance, earnings: balance - principal, principal }
+  return {
+    balance,
+    earnings: balance - principal,
+    principal,
+    rateDate: lastPublishedRate?.date || null,
+    projectedForToday,
+  }
 }
 

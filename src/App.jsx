@@ -144,6 +144,17 @@ export default function App() {
     else { setEntryModal(false); setEditingEntryId(null); await loadData() }
   }
 
+  async function toggleInvoicePaid(card) {
+    const invoiceEntries = entries.filter((item) => item.kind === 'expense' && item.card_id === card.id && item.invoice_month?.startsWith(selectedMonth))
+    if (!invoiceEntries.length) return
+    const reopening = card.invoicePaid
+    const label = `${card.name} · ${monthName(selectedMonth)}`
+    if (!window.confirm(reopening ? `Reabrir a fatura ${label}? As compras voltarão a ficar pendentes.` : `Marcar a fatura ${label} como paga? Todas as compras desta fatura serão marcadas como pagas.`)) return
+    const ids = invoiceEntries.map((item) => item.id)
+    const { error } = await supabase.from('expenses').update(reopening ? { status: 'pending', settled_on: null } : { status: 'settled', settled_on: localDate() }).in('id', ids)
+    if (error) setMessage(error.message); else await loadData()
+  }
+
   async function settleEntry(item) {
     const { error } = await supabase.from('expenses').update({ status: 'settled', settled_on: localDate() }).eq('id', item.id)
     if (error) setMessage(error.message); else loadData()
@@ -269,13 +280,22 @@ export default function App() {
     state.offset = end
     return state
   }, { offset: 0, parts: [] }).parts.join(', ')
-  const monthCards = cards.map((card) => ({
-    ...card,
-    invoiceTotal: entries.filter((item) => item.kind === 'expense' && item.card_id === card.id && item.invoice_month?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount), 0),
-    outstandingTotal: entries.filter((item) => item.kind === 'expense' && item.card_id === card.id && item.status === 'pending').reduce((sum, item) => sum + Number(item.amount), 0),
-    availableCalculated: card.credit_limit == null ? null : Number(card.credit_limit) - entries.filter((item) => item.kind === 'expense' && item.card_id === card.id && item.status === 'pending').reduce((sum, item) => sum + Number(item.amount), 0),
-    pendingCount: entries.filter((item) => item.kind === 'expense' && item.card_id === card.id && item.invoice_month?.startsWith(selectedMonth) && item.status === 'pending').length,
-  }))
+  const monthCards = cards.map((card) => {
+    const cardInvoices = entries.filter((item) => item.kind === 'expense' && item.card_id === card.id && item.invoice_month?.startsWith(selectedMonth))
+    const unpaidPurchases = entries.filter((item) => item.kind === 'expense' && item.card_id === card.id && item.status === 'pending')
+    const invoicePaid = cardInvoices.length > 0 && cardInvoices.every((item) => item.status === 'settled')
+    const invoicePaidOn = invoicePaid ? cardInvoices.map((item) => item.settled_on).filter(Boolean).sort().at(-1) || null : null
+    return {
+      ...card,
+      invoiceTotal: cardInvoices.reduce((sum, item) => sum + Number(item.amount), 0),
+      invoiceEntries: cardInvoices,
+      invoicePaid,
+      invoicePaidOn,
+      outstandingTotal: unpaidPurchases.reduce((sum, item) => sum + Number(item.amount), 0),
+      availableCalculated: card.credit_limit == null ? null : Number(card.credit_limit) - unpaidPurchases.reduce((sum, item) => sum + Number(item.amount), 0),
+      pendingCount: cardInvoices.filter((item) => item.status === 'pending').length,
+    }
+  })
   const sortedMonthEntries = [...monthEntries].sort((a, b) => (a.status === 'pending' ? a.due_date : (a.settled_on || a.spent_on)).localeCompare(b.status === 'pending' ? b.due_date : (b.settled_on || b.spent_on)))
   const filteredMonthEntries = sortedMonthEntries.filter((item) => {
     const query = entryFilters.search.trim().toLocaleLowerCase('pt-BR')
@@ -363,7 +383,7 @@ export default function App() {
         {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
       </> : activePage === 'cards' ? <>
         <section className="card-intro"><div><span className="eyebrow">ACOMPANHAMENTO DO MÊS</span><h2>Faturas de {monthName(selectedMonth)}</h2><p>Veja as compras lançadas em cada cartão e os dias de fechamento e vencimento.</p></div><div className="card-intro-total"><span>Total nas faturas</span><strong>{brl(monthCards.reduce((sum, item) => sum + item.invoiceTotal, 0))}</strong></div></section>
-        {cards.length ? <section className="managed-card-grid">{monthCards.map((item, index) => <article className="managed-card" key={item.id}><div className={`bank-card bank-card-${index % 4}`}><div className="bank-card-top"><span>MEU CONTROLE</span><CreditCard size={20} /></div><div className="bank-card-chip" /><b>{item.name}</b><div className="bank-card-footer"><span>FECHAMENTO <strong>{String(item.closing_day).padStart(2, '0')}</strong></span><span>VENCIMENTO <strong>{String(item.due_day).padStart(2, '0')}</strong></span></div></div><div className="managed-card-body"><div><span>Fatura de {monthName(selectedMonth, { month: 'long' })}</span><strong>{brl(item.invoiceTotal)}</strong></div><div className="card-limit-row"><div><span>Limite total</span><strong>{item.credit_limit == null ? '—' : brl(item.credit_limit)}</strong></div><div><span>Disponível agora</span><strong>{item.availableCalculated == null ? '—' : brl(item.availableCalculated)}</strong><small className="limit-explanation">Limite total menos compras pendentes</small></div></div><p>{item.pendingCount} compra{item.pendingCount === 1 ? '' : 's'} ainda pendente{item.pendingCount === 1 ? '' : 's'}</p><div className="card-actions"><button className="button subtle" onClick={() => openEditCard(item)}><Pencil size={14} /> Editar cartão</button><button className="icon-button danger" title="Excluir cartão" onClick={() => deleteCard(item)}><Trash2 size={16} /></button></div></div></article>)}</section> : <section className="panel card-empty"><EmptyState title="Cadastre seu primeiro cartão" text="Depois você poderá acompanhar o total das compras por mês e a data de cada fatura." action={<button className="button primary" onClick={openNewCard}><Plus size={15} /> Cadastrar cartão</button>} /></section>}
+        {cards.length ? <section className="managed-card-grid">{monthCards.map((item, index) => <article className="managed-card" key={item.id}><div className={`bank-card bank-card-${index % 4}`}><div className="bank-card-top"><span>MEU CONTROLE</span><CreditCard size={20} /></div><div className="bank-card-chip" /><b>{item.name}</b><div className="bank-card-footer"><span>FECHAMENTO <strong>{String(item.closing_day).padStart(2, '0')}</strong></span><span>VENCIMENTO <strong>{String(item.due_day).padStart(2, '0')}</strong></span></div></div><div className="managed-card-body"><div><span>Fatura de {monthName(selectedMonth, { month: 'long' })}</span><strong>{brl(item.invoiceTotal)}</strong></div><div className="invoice-status-row">{item.invoiceEntries.length ? <><span className={`status-pill ${item.invoicePaid ? 'settled' : 'pending'}`}>{item.invoicePaid ? 'Fatura paga' : 'Em aberto'}</span>{item.invoicePaidOn && <small>em {fmtDate(item.invoicePaidOn)}</small>}<button className={`button ${item.invoicePaid ? 'subtle' : 'primary'}`} onClick={() => toggleInvoicePaid(item)}>{item.invoicePaid ? 'Reabrir fatura' : 'Marcar fatura paga'}</button></> : <span className="invoice-empty-label">Sem compras neste mês</span>}</div><div className="card-limit-row"><div><span>Limite total</span><strong>{item.credit_limit == null ? '—' : brl(item.credit_limit)}</strong></div><div><span>Disponível agora</span><strong>{item.availableCalculated == null ? '—' : brl(item.availableCalculated)}</strong><small className="limit-explanation">Limite total menos compras pendentes</small></div></div><p>{item.pendingCount} compra{item.pendingCount === 1 ? '' : 's'} ainda pendente{item.pendingCount === 1 ? '' : 's'}</p><div className="card-actions"><button className="button subtle" onClick={() => openEditCard(item)}><Pencil size={14} /> Editar cartão</button><button className="icon-button danger" title="Excluir cartão" onClick={() => deleteCard(item)}><Trash2 size={16} /></button></div></div></article>)}</section> : <section className="panel card-empty"><EmptyState title="Cadastre seu primeiro cartão" text="Depois você poderá acompanhar o total das compras por mês e a data de cada fatura." action={<button className="button primary" onClick={openNewCard}><Plus size={15} /> Cadastrar cartão</button>} /></section>}
         <section className="panel entries-panel"><PanelHeading title="Compras nos cartões" subtitle={`Lançamentos associados à fatura de ${monthName(selectedMonth)}`} /><EntryTable entries={entries.filter((item) => item.kind === 'expense' && item.card_id && item.invoice_month?.startsWith(selectedMonth)).sort((a, b) => a.spent_on.localeCompare(b.spent_on))} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} emptyText="Não há compras lançadas para as faturas deste mês." /></section>
       </> : activePage === 'savings' ? <>
         <section className="savings-hero"><div><span className="hero-kicker">TOTAL GUARDADO</span><strong>{brl(potBalances.reduce((sum, pot) => sum + pot.balance, 0))}</strong><span className="hero-caption">Saldo somado dos seus cofrinhos</span></div><div className="savings-month"><span>Movimentações em {monthName(selectedMonth)}</span><b className="income-text">+ {brl(monthDeposits)} guardados</b><b className="withdrawal-text">− {brl(monthWithdrawals)} retirados</b></div><PiggyBank className="savings-hero-icon" size={35} /></section>

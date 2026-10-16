@@ -61,3 +61,5 @@
 @media(max-width:520px){.annual-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.annual-month{padding:11px}.annual-month>b{font-size:12px}.category-add{grid-template-columns:1fr 1fr}.category-add input{grid-column:1/-1;grid-row:1}.category-add select{grid-column:1;grid-row:2}.category-add button{grid-column:2;grid-row:2}.custom-category-list{grid-template-columns:1fr}.reminder-strip{align-items:flex-start;flex-direction:column}.reminder-strip .button{width:100%}}
 
 .limit-explanation{font-size:9px!important;color:#8b8298!important;font-weight:400!important;line-height:1.35}
+
+.invoice-status-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 12px}.invoice-status-row .button{height:31px;padding:0 11px;font-size:10px}.invoice-status-row>small,.invoice-empty-label{font-size:10px;color:#80768d}.invoice-status-row .status-pill{font-size:10px}

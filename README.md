@@ -33,7 +33,7 @@ Execute `supabase/migrations/202610160006_budgets_recurring.sql` no SQL Editor, 
 
 ### Limites dos cartões
 
-Para guardar o limite total e o valor disponível atual de cada cartão, execute `supabase/migrations/202610160007_card_credit_limits.sql` depois das migrações anteriores. O limite total é opcional. O limite disponível é calculado como limite total menos todas as compras de crédito pendentes associadas ao cartão; marcar uma compra como paga libera seu valor no cálculo. O campo antigo `available_limit`, se existir no banco, não é mais usado.
+Para guardar o limite total e o valor disponível atual de cada cartão, execute `supabase/migrations/202610160007_card_credit_limits.sql` depois das migrações anteriores. O limite total é opcional. O limite disponível é calculado como limite total menos todas as compras de crédito pendentes associadas ao cartão; marcar uma compra como paga libera seu valor no cálculo. Na aba de cartões, cada fatura mensal também mostra se está paga ou em aberto e permite marcar/reabrir a fatura, atualizando as compras daquele cartão e mês. O campo antigo `available_limit`, se existir no banco, não é mais usado.
 
 ### Recursos novos (migração 008)
 

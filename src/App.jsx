@@ -90,6 +90,8 @@ export default function App() {
   const [entryFilters, setEntryFilters] = useState({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all', responsible: 'all' })
   const [hideValues, setHideValues] = useState(false)
 
+  useEffect(() => { setShowMoreNav(['year', 'calendar', 'categories', 'responsible', 'recurring', 'tutorial'].includes(activePage)) }, [activePage])
+
   const cdiStartDate = pots
     .filter((pot) => pot.cdi_percentage !== null && pot.cdi_percentage !== undefined && pot.cdi_percentage !== '')
     .map((pot) => pot.created_at?.slice(0, 10) || localDate())
@@ -853,7 +855,7 @@ export default function App() {
   const isNewWorkspace = entries.length === 0 && cards.length === 0 && pots.length === 0 && recurringRules.length === 0
   const morePages = ['year', 'calendar', 'categories', 'responsible', 'recurring', 'tutorial']
   const isMorePageActive = morePages.includes(activePage)
-  const navigate = (page) => { setActivePage(page); setShowMoreNav(false) }
+  const navigate = (page) => { setActivePage(page); setShowMoreNav(morePages.includes(page)) }
 
   function openGlobalSearchResult(item) {
     const relevantDate = item.card_id ? (item.invoice_month || item.spent_on) : (item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on))

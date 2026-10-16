@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays,
   Check, ChevronDown, CreditCard, LayoutDashboard, LogOut, Pencil, Plus, PiggyBank,
-  ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff, ChartNoAxesCombined, Tags, Bell,
+  ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff, ChartNoAxesCombined, Tags, Bell, FileUp, Download, Paperclip, History, Users,
 } from 'lucide-react'
 import { configured, supabase } from './lib/supabase'
 
@@ -24,7 +24,70 @@ const incomeCategories = ['Salário', 'Freelance', 'Investimentos', 'Reembolso',
 const chartColors = ['#6d28d9', '#8428d8', '#9b36d7', '#5b21b6', '#ad5ce0', '#7336b8', '#bf7ae5', '#8b5ac7', '#d1a6eb']
 const initialEntry = (monthKey = monthOf()) => {
   const date = monthKey === monthOf() ? localDate() : monthStart(monthKey)
-  return { kind: 'expense', description: '', amount: '', category: 'Alimentação', spent_on: date, due_date: date, settled_on: '', status: 'pending', payment_method: 'pix', card_id: '', invoice_month: monthKey, installment_count: '1' }
+  return { kind: 'expense', description: '', amount: '', category: 'Alimentação', spent_on: date, due_date: date, settled_on: '', status: 'pending', payment_method: 'pix', card_id: '', invoice_month: monthKey, installment_count: '1', paid_by: '', shared_with: '', notes: '', attachmentFiles: [] }
+}
+
+function shareBreakdown(item) {
+  const names = [...new Set((item.shared_with || []).map((name) => name.trim()).filter(Boolean))]
+  if (!names.length) return ''
+  const cents = Math.round(Number(item.amount) * 100)
+  const base = Math.floor(cents / names.length), extra = cents % names.length
+  return names.map((name, index) => `${name}: ${brl((base + (index < extra ? 1 : 0)) / 100)}`).join(' · ')
+}
+
+function parseCsv(text) {
+  const delimiter = (text.split(/\r?\n/, 1)[0].match(/;/g) || []).length > (text.split(/\r?\n/, 1)[0].match(/,/g) || []).length ? ';' : ','
+  const rows = []; let row = []; let field = ''; let quoted = false
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]
+    if (quoted && char === '"' && text[i + 1] === '"') { field += '"'; i += 1 }
+    else if (char === '"') quoted = !quoted
+    else if (!quoted && char === delimiter) { row.push(field.trim()); field = '' }
+    else if (!quoted && (char === '\n' || char === '\r')) { if (char === '\r' && text[i + 1] === '\n') i += 1; row.push(field.trim()); if (row.some(Boolean)) rows.push(row); row = []; field = '' }
+    else field += char
+  }
+  row.push(field.trim()); if (row.some(Boolean)) rows.push(row)
+  if (rows.length < 2) return { rows: [], error: 'O arquivo precisa ter cabeçalho e ao menos um lançamento.' }
+  const headers = rows[0].map((value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replaceAll(' ', '_'))
+  const required = ['tipo', 'descricao', 'valor', 'categoria', 'data']
+  const missing = required.filter((header) => !headers.includes(header))
+  if (missing.length) return { rows: [], error: `Colunas obrigatórias ausentes: ${missing.join(', ')}.` }
+  const dateValue = (value) => {
+    const v = value.trim()
+    let iso = /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : ''
+    const match = v.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+    if (!iso && match) iso = `${match[3]}-${match[2]}-${match[1]}`
+    if (!iso) return ''
+    const parsed = new Date(`${iso}T12:00:00`)
+    return Number.isNaN(parsed.getTime()) || localDate(parsed) !== iso ? '' : iso
+  }
+  const result = rows.slice(1).map((cells, index) => {
+    const data = Object.fromEntries(headers.map((header, column) => [header, cells[column] || '']))
+    const errors = []
+    const kindValue = data.tipo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    const description = data.descricao.trim()
+    const category = data.categoria.trim() || 'Outros'
+    if (!description) errors.push('descrição obrigatória')
+    if (description.length > 100) errors.push('descrição excede 100 caracteres')
+    if (category.length > 40) errors.push('categoria excede 40 caracteres')
+    const kind = ['receita', 'income', 'entrada'].includes(kindValue) ? 'income' : ['despesa', 'expense', 'saida'].includes(kindValue) ? 'expense' : ''
+    if (!kind) errors.push('tipo inválido')
+    const amountString = data.valor.replace(/\s/g, '').replace(/\.(?=\d{3}(?:\D|$))/g, '').replace(',', '.')
+    const amount = Number(amountString)
+    if (!Number.isFinite(amount) || amount <= 0) errors.push('valor inválido')
+    const spentOn = dateValue(data.data)
+    if (!spentOn) errors.push('data inválida (use AAAA-MM-DD ou DD/MM/AAAA)')
+    const dueDate = data.vencimento ? dateValue(data.vencimento) : spentOn
+    if (!dueDate) errors.push('vencimento inválido (use AAAA-MM-DD ou DD/MM/AAAA)')
+    const statusValue = (data.situacao || 'pendente').toLowerCase()
+    const status = ['paga', 'pago', 'recebida', 'recebido', 'settled'].includes(statusValue) ? 'settled' : ['pendente', 'pending'].includes(statusValue) ? 'pending' : ''
+    if (!status) errors.push('situação inválida')
+    const methodValue = (data.forma_pagamento || 'outro').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    const paymentMethod = ({ pix: 'pix', dinheiro: 'cash', cash: 'cash', debito: 'debit_card', debit_card: 'debit_card', credito: 'credit_card', credit_card: 'credit_card', outro: 'other', other: 'other' })[methodValue]
+    if (kind === 'expense' && !paymentMethod) errors.push('forma_pagamento inválida')
+    return { line: index + 2, error: errors.join('; '), raw: data, value: { kind, description, amount, category, spent_on: spentOn, due_date: dueDate, settled_on: status === 'settled' ? (dateValue(data.pago_em) || spentOn) : null, status, payment_method: kind === 'expense' ? paymentMethod : 'other', card_name: data.cartao.trim(), invoice_month: monthStart((data.mes_fatura && dateValue(data.mes_fatura + '-01')) ? data.mes_fatura : spentOn.slice(0, 7)), paid_by: data.pagador.trim(), shared_with: (data.dividido_com || '').split(/[|;]/).map((name) => name.trim()).filter(Boolean), notes: data.observacoes.trim() } }
+  })
+  return { rows: result, error: '' }
 }
 
 export default function App() {
@@ -35,6 +98,16 @@ export default function App() {
   const [password, setPassword] = useState('')
   const [message, setMessage] = useState('')
   const [entries, setEntries] = useState([])
+  const [attachments, setAttachments] = useState([])
+  const [historyModal, setHistoryModal] = useState(null)
+  const [historyRows, setHistoryRows] = useState([])
+  const [recentHistory, setRecentHistory] = useState([])
+  const [attachmentModal, setAttachmentModal] = useState(null)
+  const [csvModal, setCsvModal] = useState(false)
+  const [csvRows, setCsvRows] = useState([])
+  const [csvError, setCsvError] = useState('')
+  const [csvBusy, setCsvBusy] = useState(false)
+  const [monthClosure, setMonthClosure] = useState(null)
   const [cards, setCards] = useState([])
   const [pots, setPots] = useState([])
   const [movements, setMovements] = useState([])
@@ -80,7 +153,7 @@ export default function App() {
   async function loadData() {
     const { error: recurrenceError } = await supabase.rpc('generate_recurring_expenses', { p_month: monthStart(selectedMonth) })
     if (recurrenceError) setMessage(recurrenceError.message)
-    const [cardResult, entryResult, potResult, movementResult, budgetResult, recurringResult, categoryResult, reminderResult] = await Promise.all([
+    const [cardResult, entryResult, potResult, movementResult, budgetResult, recurringResult, categoryResult, reminderResult, attachmentResult, closureResult, historyResult] = await Promise.all([
       supabase.from('cards').select('*').order('created_at', { ascending: false }),
       supabase.from('expenses').select('*, cards(name)').order('due_date', { ascending: true }),
       supabase.from('savings_pots').select('*').order('created_at', { ascending: true }),
@@ -89,9 +162,12 @@ export default function App() {
       supabase.from('recurring_rules').select('*').order('created_at', { ascending: false }),
       supabase.from('user_categories').select('*').order('name'),
       supabase.from('reminder_settings').select('*').maybeSingle(),
+      supabase.from('expense_attachments').select('*').order('created_at', { ascending: false }),
+      supabase.from('month_closures').select('*').eq('month', monthStart(selectedMonth)).maybeSingle(),
+      supabase.from('expense_history').select('*').order('changed_at', { ascending: false }).limit(20),
     ])
-    if (cardResult.error || entryResult.error || potResult.error || movementResult.error || budgetResult.error || recurringResult.error || categoryResult.error || reminderResult.error) setMessage(cardResult.error?.message || entryResult.error?.message || potResult.error?.message || movementResult.error?.message || budgetResult.error?.message || recurringResult.error?.message || categoryResult.error?.message || reminderResult.error?.message || recurrenceError.message)
-    else { setCards(cardResult.data || []); setEntries(entryResult.data || []); setPots(potResult.data || []); setMovements(movementResult.data || []); setBudgets(budgetResult.data || []); setRecurringRules(recurringResult.data || []); setUserCategories(categoryResult.data || []); setReminderSettings(reminderResult.data || { enabled: false, days_before: 1 }) }
+    if (cardResult.error || entryResult.error || potResult.error || movementResult.error || budgetResult.error || recurringResult.error || categoryResult.error || reminderResult.error || attachmentResult.error || closureResult.error || historyResult.error) setMessage(cardResult.error?.message || entryResult.error?.message || potResult.error?.message || movementResult.error?.message || budgetResult.error?.message || recurringResult.error?.message || categoryResult.error?.message || reminderResult.error?.message || attachmentResult.error?.message || closureResult.error?.message || historyResult.error?.message || recurrenceError.message)
+    else { setCards(cardResult.data || []); setEntries(entryResult.data || []); setPots(potResult.data || []); setMovements(movementResult.data || []); setBudgets(budgetResult.data || []); setRecurringRules(recurringResult.data || []); setUserCategories(categoryResult.data || []); setReminderSettings(reminderResult.data || { enabled: false, days_before: 1 }); setAttachments(attachmentResult.data || []); setMonthClosure(closureResult.data || null); setRecentHistory(historyResult.data || []) }
   }
 
   function requestConfirmation({ title, message, details, confirmLabel = 'Excluir', onConfirm }) {
@@ -122,6 +198,7 @@ export default function App() {
       spent_on: item.spent_on, due_date: item.due_date, settled_on: item.settled_on || '', status: item.status || 'settled',
       payment_method: item.payment_method || (item.card_id ? 'credit_card' : 'other'),
       card_id: item.card_id || '', invoice_month: item.invoice_month?.slice(0, 7) || selectedMonth, installment_count: '1',
+      paid_by: item.paid_by || '', shared_with: (item.shared_with || []).join(', '), notes: item.notes || '', attachmentFiles: [],
     })
     setEntryModal(true)
   }
@@ -137,9 +214,12 @@ export default function App() {
       payment_method: entryForm.kind === 'expense' ? entryForm.payment_method : 'other',
       card_id: entryForm.kind === 'expense' && entryForm.payment_method === 'credit_card' ? (entryForm.card_id || null) : null,
       invoice_month: monthStart(entryForm.invoice_month || selectedMonth),
+      paid_by: entryForm.kind === 'expense' ? (entryForm.paid_by.trim() || null) : null,
+      shared_with: entryForm.kind === 'expense' ? [...new Set(entryForm.shared_with.split(/[,;]/).map((name) => name.trim()).filter(Boolean))] : [],
+      notes: entryForm.notes.trim() || null,
     }
     let result
-    if (editingEntryId) result = await supabase.from('expenses').update(payload).eq('id', editingEntryId)
+    if (editingEntryId) result = await supabase.from('expenses').update(payload).eq('id', editingEntryId).select('id').single()
     else if (count > 1) {
       const start = new Date(`${entryForm.invoice_month || selectedMonth}-01T12:00:00`)
       const cents = Math.round(amount * 100), base = Math.floor(cents / count), remainder = cents % count
@@ -152,10 +232,113 @@ export default function App() {
         const dueDay = Math.min(Number(card?.due_day || 1), endDay)
         return { ...payload, amount: (base + (index < remainder ? 1 : 0)) / 100, invoice_month: monthStart(invoiceMonth), due_date: `${invoiceMonth}-${String(dueDay).padStart(2, '0')}`, installment_group_id: group, installment_number: index + 1, installment_count: count }
       })
-      result = await supabase.from('expenses').insert(rows)
-    } else result = await supabase.from('expenses').insert(payload)
-    if (result.error) setMessage(result.error.message)
-    else { setEntryModal(false); setEditingEntryId(null); await loadData() }
+      result = await supabase.from('expenses').insert(rows).select('id')
+    } else result = await supabase.from('expenses').insert(payload).select('id').single()
+    if (result.error) { setMessage(result.error.message); return }
+    const savedEntries = Array.isArray(result.data) ? result.data : [result.data]
+    const attachmentEntryId = savedEntries[0]?.id
+    const files = entryForm.attachmentFiles || []
+    for (const file of files) {
+      const safeName = file.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]/g, '_').slice(-100)
+      const storagePath = `${session.user.id}/${attachmentEntryId}/${crypto.randomUUID()}-${safeName}`
+      const uploaded = await supabase.storage.from('expense-receipts').upload(storagePath, file, { contentType: file.type, upsert: false })
+      if (uploaded.error) { setMessage(`Lançamento salvo, mas o anexo “${file.name}” não foi enviado: ${uploaded.error.message}`); continue }
+      const attachmentResult = await supabase.from('expense_attachments').insert({ expense_id: attachmentEntryId, storage_path: storagePath, file_name: file.name, mime_type: file.type, size_bytes: file.size })
+      if (attachmentResult.error) {
+        await supabase.storage.from('expense-receipts').remove([storagePath])
+        setMessage(`Lançamento salvo, mas não foi possível registrar o anexo: ${attachmentResult.error.message}`)
+      }
+    }
+    setEntryModal(false); setEditingEntryId(null); await loadData()
+  }
+
+  function deleteAttachment(file) {
+    requestConfirmation({ title: 'Excluir anexo?', message: `Excluir o arquivo “${file.file_name}”?`, details: 'O comprovante será removido permanentemente.', confirmLabel: 'Excluir anexo', onConfirm: async () => {
+      const removed = await supabase.storage.from('expense-receipts').remove([file.storage_path])
+      if (removed.error) { setMessage(removed.error.message); return }
+      const { error } = await supabase.from('expense_attachments').delete().eq('id', file.id)
+      if (error) setMessage(error.message)
+      await loadData()
+      setAttachmentModal((current) => current ? { ...current, files: current.files.filter((item) => item.id !== file.id) } : null)
+    } })
+  }
+
+  async function openHistory(item) {
+    const { data, error } = await supabase.from('expense_history').select('*').eq('expense_id', item.id).order('changed_at', { ascending: false })
+    if (error) setMessage(error.message)
+    else { setHistoryRows(data || []); setHistoryModal(item) }
+  }
+
+  async function openAttachment(item) {
+    const tab = window.open('about:blank', '_blank')
+    if (tab) tab.opener = null
+    const { data, error } = await supabase.storage.from('expense-receipts').createSignedUrl(item.storage_path, 60)
+    if (error) { tab?.close(); setMessage(error.message) }
+    else if (tab) tab.location.href = data.signedUrl
+    else setMessage('O navegador bloqueou a nova aba. Permita pop-ups para abrir o comprovante.')
+  }
+
+  async function importCsvFile(file) {
+    setCsvError(''); setCsvRows([])
+    if (!file.name.toLocaleLowerCase('pt-BR').endsWith('.csv')) { setCsvError('Escolha um arquivo com extensão .csv.'); return }
+    if (file.size > 2 * 1024 * 1024) { setCsvError('O arquivo deve ter no máximo 2 MB.'); return }
+    try {
+      const parsed = parseCsv(await file.text())
+      if (parsed.error) setCsvError(parsed.error)
+      else setCsvRows(parsed.rows)
+    } catch (error) { setCsvError(`Não foi possível ler o arquivo: ${error.message}`) }
+  }
+
+  async function importCsvRows() {
+    const valid = csvRows.filter((row) => !row.error)
+    if (!valid.length) { setCsvError('Não há linhas válidas para importar.'); return }
+    if (valid.length > 500) { setCsvError('Importe até 500 lançamentos por arquivo.'); return }
+    const prepared = valid.map(({ value, line }) => {
+      const card = value.card_name ? cards.find((item) => item.name.trim().toLocaleLowerCase('pt-BR') === value.card_name.toLocaleLowerCase('pt-BR')) : null
+      if (value.card_name && value.payment_method !== 'credit_card') return { line, error: 'a coluna cartao só pode ser usada com forma_pagamento=credito' }
+      if (value.card_name && !card) return { line, error: `cartão “${value.card_name}” não encontrado` }
+      if (value.payment_method === 'credit_card' && !card) return { line, error: 'informe um cartão existente na coluna cartao para pagamento em crédito' }
+      const { card_name, ...record } = value
+      return { value: { ...record, paid_by: value.kind === 'expense' ? (value.paid_by || null) : null, shared_with: value.kind === 'expense' ? value.shared_with : [], card_id: value.payment_method === 'credit_card' ? card.id : null, invoice_month: value.payment_method === 'credit_card' ? value.invoice_month : monthStart(value.spent_on.slice(0, 7)) } }
+    })
+    const invalid = prepared.filter((row) => row.error)
+    if (invalid.length) { setCsvError(invalid.slice(0, 5).map((row) => `Linha ${row.line}: ${row.error}`).join(' · ')); return }
+    setCsvBusy(true)
+    const { error } = await supabase.from('expenses').insert(prepared.map(({ value }) => value))
+    setCsvBusy(false)
+    if (error) setCsvError(`Importação não concluída: ${error.message}`)
+    else { setCsvModal(false); setCsvRows([]); setCsvError(''); setMessage(`${valid.length} lançamento${valid.length === 1 ? '' : 's'} importado${valid.length === 1 ? '' : 's'}.`); await loadData() }
+  }
+
+  function downloadCsvTemplate() {
+    const content = 'tipo;descricao;valor;categoria;data;vencimento;situacao;forma_pagamento;cartao;mes_fatura;pagador;dividido_com;observacoes\ndespesa;Aluguel;1500,00;Moradia;2026-10-05;2026-10-10;pendente;pix;;;David;David|Amigo;Aluguel dividido\nreceita;Salário;4500,00;Salário;2026-10-01;2026-10-01;recebida;outro;;;;;'
+    const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }))
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'modelo-lancamentos.csv'; anchor.click(); URL.revokeObjectURL(url)
+  }
+
+  async function closeSelectedMonth() {
+    const byCategory = monthBudgetUsage.map((item) => ({ category: item.category, planned: Number(item.amount), actual: item.spent, difference: Number(item.amount) - item.spent }))
+    const plannedExpenses = budgets.reduce((sum, item) => sum + Number(item.amount), 0)
+    const actualExpenses = monthEntries.filter((item) => item.kind === 'expense').reduce((sum, item) => sum + Number(item.amount), 0)
+    const snapshot = { planned_expenses: plannedExpenses, actual_expenses: actualExpenses, actual_income: monthIncome, net_result: monthResult, categories: byCategory, closed_entry_count: monthEntries.length }
+    const { error } = await supabase.from('month_closures').upsert({ month: monthStart(selectedMonth), snapshot, closed_at: new Date().toISOString() }, { onConflict: 'user_id,month' }).select().single()
+    if (error) setMessage(error.message)
+    else await loadData()
+  }
+
+  function openEmergencyFund() {
+    const monthKeys = Array.from({ length: 3 }, (_, index) => { const date = new Date(`${selectedMonth}-15T12:00:00`); date.setMonth(date.getMonth() - index); return monthOf(date) })
+    const essential = new Set(['Moradia', 'Alimentação', 'Saúde', 'Transporte'])
+    const monthlyTotals = monthKeys.map((key) => entries.filter((item) => item.kind === 'expense' && essential.has(item.category) && (item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on))?.startsWith(key)).reduce((sum, item) => sum + Number(item.amount), 0))
+    const suggested = monthlyTotals.reduce((sum, value) => sum + value, 0) / monthlyTotals.length * 3
+    const due = new Date(); due.setFullYear(due.getFullYear() + 1)
+    const existing = pots.find((pot) => pot.name.toLocaleLowerCase('pt-BR') === 'reserva de emergência')
+    if (existing) {
+      setEditingPotId(existing.id); setPotForm({ name: existing.name, opening_balance: String(existing.opening_balance), goal_amount: (suggested || Number(existing.goal_amount) || '').toString(), goal_due_date: existing.goal_due_date || localDate(due) })
+    } else {
+      setEditingPotId(null); setPotForm({ name: 'Reserva de emergência', opening_balance: '0', goal_amount: suggested ? suggested.toFixed(2) : '', goal_due_date: localDate(due) })
+    }
+    setPotModal(true)
   }
 
   function toggleInvoicePaid(card) {
@@ -187,6 +370,9 @@ export default function App() {
       confirmLabel: isInstallmentGroup ? 'Excluir parcelas' : 'Excluir lançamento',
       onConfirm: async () => {
         setEntries((current) => current.filter((entry) => isInstallmentGroup ? entry.installment_group_id !== item.installment_group_id : entry.id !== item.id))
+        const groupIds = isInstallmentGroup ? entries.filter((entry) => entry.installment_group_id === item.installment_group_id).map((entry) => entry.id) : [item.id]
+        const storedAttachments = await supabase.from('expense_attachments').select('storage_path').in('expense_id', groupIds)
+        if (storedAttachments.data?.length) await supabase.storage.from('expense-receipts').remove(storedAttachments.data.map((file) => file.storage_path))
         const query = supabase.from('expenses').delete()
         const { error } = isInstallmentGroup ? await query.eq('installment_group_id', item.installment_group_id) : await query.eq('id', item.id)
         if (error) setMessage(error.message)
@@ -324,6 +510,8 @@ export default function App() {
   const savedThisMonth = movements.filter((item) => item.kind === 'deposit' && item.moved_on?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount), 0)
   const availableEstimate = monthResult - savedThisMonth + movements.filter((item) => item.kind === 'withdrawal' && item.moved_on?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount), 0)
   const monthBudgetUsage = budgets.map((budget) => ({ ...budget, spent: monthEntries.filter((item) => item.kind === 'expense' && item.category === budget.category).reduce((sum, item) => sum + Number(item.amount), 0) }))
+  const liveMonthSnapshot = { planned_expenses: budgets.reduce((sum, item) => sum + Number(item.amount), 0), actual_expenses: monthEntries.filter((item) => item.kind === 'expense').reduce((sum, item) => sum + Number(item.amount), 0), actual_income: monthIncome, net_result: monthResult, categories: monthBudgetUsage.map((item) => ({ category: item.category, planned: Number(item.amount), actual: item.spent, difference: Number(item.amount) - item.spent })), closed_entry_count: monthEntries.length }
+  const displayedMonthSnapshot = monthClosure?.snapshot || liveMonthSnapshot
   const priorMonths = Array.from({ length: 6 }, (_, index) => {
     const date = new Date(`${selectedMonth}-15T12:00:00`); date.setMonth(date.getMonth() - (5 - index))
     const key = monthOf(date)
@@ -415,7 +603,7 @@ export default function App() {
         <div className="header-actions">
           <button className="icon-button privacy-toggle" type="button" aria-label={hideValues ? 'Mostrar valores' : 'Ocultar valores'} aria-pressed={hideValues} title={hideValues ? 'Mostrar valores' : 'Ocultar valores'} onClick={() => setHideValues((hidden) => !hidden)}>{hideValues ? <Eye size={18}/> : <EyeOff size={18}/>}</button>
           {activePage === 'year' ? <YearPicker value={selectedYear} onChange={setSelectedYear}/> : <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />}
-          {activePage === 'month' && <button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button>}
+          {activePage === 'month' && <><button className="button subtle" onClick={() => { setCsvError(''); setCsvRows([]); setCsvModal(true) }}><FileUp size={16}/> Importar CSV</button><button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button></>}
           {activePage === 'cards' && <button className="button primary" onClick={openNewCard}><Plus size={17} /> Novo cartão</button>}
           {activePage === 'savings' && <button className="button primary" onClick={openNewPot}><Plus size={17} /> Novo cofrinho</button>}
           {activePage === 'recurring' && <button className="button primary" onClick={openNewRecurring}><Plus size={17} /> Nova recorrência</button>}
@@ -464,21 +652,25 @@ export default function App() {
           </article>
         </section>
 
+        <section className="panel month-close-panel"><PanelHeading title="Fechamento do mês" subtitle={monthClosure ? `Fechado em ${new Date(monthClosure.closed_at).toLocaleString('pt-BR')}` : 'Compare o orçamento com o realizado e salve um retrato deste mês.'} action={<button className="button primary" onClick={() => requestConfirmation({ title: monthClosure ? 'Atualizar fechamento?' : 'Fechar este mês?', message: `Salvar o comparativo de ${monthName(selectedMonth)}?`, details: 'O fechamento registra os totais e limites atuais. Você pode atualizar o retrato depois se editar lançamentos.', confirmLabel: monthClosure ? 'Atualizar fechamento' : 'Fechar mês', onConfirm: closeSelectedMonth })}><Check size={15}/>{monthClosure ? 'Atualizar fechamento' : 'Fechar mês'}</button>}/><div className="close-summary-grid"><div><span>Orçamento planejado</span><strong>{brl(displayedMonthSnapshot.planned_expenses)}</strong></div><div><span>Despesas realizadas</span><strong>{brl(displayedMonthSnapshot.actual_expenses)}</strong></div><div><span>Diferença</span><strong className={Number(displayedMonthSnapshot.planned_expenses)-Number(displayedMonthSnapshot.actual_expenses) < 0 ? 'withdrawal-text' : 'income-text'}>{brl(Number(displayedMonthSnapshot.planned_expenses)-Number(displayedMonthSnapshot.actual_expenses))}</strong></div><div><span>Resultado do mês</span><strong>{brl(displayedMonthSnapshot.net_result)}</strong></div></div>{displayedMonthSnapshot.categories?.length ? <div className="table-wrap"><table className="entry-table close-table"><thead><tr><th>Categoria</th><th className="align-right">Previsto</th><th className="align-right">Realizado</th><th className="align-right">Saldo do limite</th></tr></thead><tbody>{displayedMonthSnapshot.categories.map((item)=><tr key={item.category}><th scope="row">{item.category}</th><td className="align-right">{brl(item.planned)}</td><td className="align-right">{brl(item.actual)}</td><td className={`align-right ${Number(item.difference) < 0 ? 'withdrawal-text' : 'income-text'}`}>{brl(item.difference)}</td></tr>)}</tbody></table></div> : <p className="modal-help">Defina limites por categoria para incluir metas detalhadas no fechamento. O total de despesas e receitas já está sendo acompanhado.</p>}</section>
+
+        <section className="panel history-panel"><PanelHeading title="Histórico recente" subtitle="Últimas criações, edições, pagamentos e exclusões" action={<span className="count-pill">{recentHistory.length} eventos</span>}/>{recentHistory.length ? <div className="recent-history-list">{recentHistory.slice(0,8).map((row)=><div className="recent-history-row" key={row.id}><span className={`history-dot ${row.action}`}/><div><b>{row.description}</b><small>{{created:'criado',updated:'editado',settled:'pago/recebido',deleted:'excluído'}[row.action] || row.action} · {new Date(row.changed_at).toLocaleString('pt-BR')}</small></div><strong>{brl((row.new_data || row.old_data)?.amount)}</strong>{entries.some((entry) => entry.id === row.expense_id) && <button className="button subtle" onClick={() => openHistory(entries.find((entry) => entry.id === row.expense_id))}>Detalhes</button>}</div>)}</div> : <p className="modal-help">As alterações de lançamentos aparecerão aqui, inclusive os registros que forem removidos.</p>}</section>
+
         <section className="panel entries-panel">
           <PanelHeading title="Lançamentos do mês" subtitle={`${filteredMonthEntries.length} de ${sortedMonthEntries.length} registros em ${monthName(selectedMonth)}`} action={<button className="button subtle" onClick={openNewEntry}><Plus size={15} /> Adicionar</button>} />
           <EntryFilters value={entryFilters} onChange={setEntryFilters} categories={allCategories} />
-          {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
+          {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} attachments={attachments} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} onHistory={openHistory} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
         </section>
       </> : activePage === 'year' ? <>
         {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
       </> : activePage === 'cards' ? <>
         <section className="card-intro"><div><span className="eyebrow">ACOMPANHAMENTO DO MÊS</span><h2>Faturas de {monthName(selectedMonth)}</h2><p>Veja as compras lançadas em cada cartão e os dias de fechamento e vencimento.</p></div><div className="card-intro-total"><span>Total nas faturas</span><strong>{brl(monthCards.reduce((sum, item) => sum + item.invoiceTotal, 0))}</strong></div></section>
         {cards.length ? <section className="managed-card-grid">{monthCards.map((item, index) => <article className="managed-card" key={item.id}><div className={`bank-card bank-card-${index % 4}`}><div className="bank-card-top"><span>MEU CONTROLE</span><CreditCard size={20} /></div><div className="bank-card-chip" /><b>{item.name}</b><div className="bank-card-footer"><span>FECHAMENTO <strong>{String(item.closing_day).padStart(2, '0')}</strong></span><span>VENCIMENTO <strong>{String(item.due_day).padStart(2, '0')}</strong></span></div></div><div className="managed-card-body"><div><span>Fatura de {monthName(selectedMonth, { month: 'long' })}</span><strong>{brl(item.invoiceTotal)}</strong></div><div className="invoice-status-row">{item.invoiceEntries.length ? <><span className={`status-pill ${item.invoicePaid ? 'settled' : 'pending'}`}>{item.invoicePaid ? 'Fatura paga' : 'Em aberto'}</span>{item.invoicePaidOn && <small>em {fmtDate(item.invoicePaidOn)}</small>}<button className={`button ${item.invoicePaid ? 'subtle' : 'primary'}`} onClick={() => toggleInvoicePaid(item)}>{item.invoicePaid ? 'Reabrir fatura' : 'Marcar fatura paga'}</button></> : <span className="invoice-empty-label">Sem compras neste mês</span>}</div><div className="card-limit-row"><div><span>Limite total</span><strong>{item.credit_limit == null ? '—' : brl(item.credit_limit)}</strong></div><div><span>Disponível agora</span><strong>{item.availableCalculated == null ? '—' : brl(item.availableCalculated)}</strong><small className="limit-explanation">Limite total menos compras pendentes</small></div></div><p>{item.pendingCount} compra{item.pendingCount === 1 ? '' : 's'} ainda pendente{item.pendingCount === 1 ? '' : 's'}</p><div className="card-actions"><button className="button subtle" onClick={() => openEditCard(item)}><Pencil size={14} /> Editar cartão</button><button className="icon-button danger" aria-label={`Excluir cartão ${item.name}`} title="Excluir cartão" onClick={() => deleteCard(item)}><Trash2 size={16} /></button></div></div></article>)}</section> : <section className="panel card-empty"><EmptyState title="Cadastre seu primeiro cartão" text="Depois você poderá acompanhar o total das compras por mês e a data de cada fatura." action={<button className="button primary" onClick={openNewCard}><Plus size={15} /> Cadastrar cartão</button>} /></section>}
-        <section className="panel entries-panel"><PanelHeading title="Compras nos cartões" subtitle={`Lançamentos associados à fatura de ${monthName(selectedMonth)}`} /><EntryTable entries={entries.filter((item) => item.kind === 'expense' && item.card_id && item.invoice_month?.startsWith(selectedMonth)).sort((a, b) => a.spent_on.localeCompare(b.spent_on))} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} emptyText="Não há compras lançadas para as faturas deste mês." /></section>
+        <section className="panel entries-panel"><PanelHeading title="Compras nos cartões" subtitle={`Lançamentos associados à fatura de ${monthName(selectedMonth)}`} /><EntryTable entries={entries.filter((item) => item.kind === 'expense' && item.card_id && item.invoice_month?.startsWith(selectedMonth)).sort((a, b) => a.spent_on.localeCompare(b.spent_on))} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} attachments={attachments} onHistory={openHistory} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} emptyText="Não há compras lançadas para as faturas deste mês." /></section>
       </> : activePage === 'savings' ? <>
         {savingsGoals.length > 0 && <section className="panel goal-summary-panel"><PanelHeading title="Resumo das metas" subtitle={`${savingsGoals.length} cofrinho${savingsGoals.length === 1 ? '' : 's'} com objetivo definido`}/><div className="goal-summary-grid"><div><span>Guardado para as metas</span><strong>{brl(totalGoalSaved)}</strong></div><div><span>Falta para alcançar</span><strong>{brl(totalGoalRemaining)}</strong></div><div><span>Valor total das metas</span><strong>{brl(totalGoalAmount)}</strong></div><div className="goal-summary-progress"><div><span>Progresso geral</span><b>{Math.round(totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}%</b></div><i role="progressbar" aria-label="Progresso geral das metas" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}><span style={{width:`${Math.min(100,totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}%`}}/></i></div></div></section>}
         <section className="savings-hero"><div><span className="hero-kicker">TOTAL GUARDADO</span><strong>{brl(potBalances.reduce((sum, pot) => sum + pot.balance, 0))}</strong><span className="hero-caption">Saldo somado dos seus cofrinhos</span></div><div className="savings-month"><span>Movimentações em {monthName(selectedMonth)}</span><b className="income-text">+ {brl(monthDeposits)} guardados</b><b className="withdrawal-text">− {brl(monthWithdrawals)} retirados</b></div><PiggyBank className="savings-hero-icon" size={35} /></section>
-        <section className="panel savings-note"><PiggyBank size={18}/><span>Os valores dos cofrinhos são um acompanhamento manual separado das despesas. Assim, guardar dinheiro não aparece como um novo gasto no seu orçamento.</span></section>
+        <section className="panel savings-note"><span><PiggyBank size={18}/><span>Os valores dos cofrinhos são um acompanhamento manual separado das despesas. Assim, guardar dinheiro não aparece como um novo gasto no seu orçamento.</span></span><button className="button subtle" onClick={openEmergencyFund}><Target size={15}/> Sugerir meta de emergência</button></section>
         {potBalances.length ? <section className="savings-pot-grid">{potBalances.map((pot) => { const progress = pot.goal_amount ? Math.min(100, pot.balance / Number(pot.goal_amount) * 100) : null; return <article className="panel savings-pot" key={pot.id}><div className="pot-title"><span className="pot-icon"><PiggyBank size={19}/></span><div><h2>{pot.name}</h2><span>{pot.goal_amount ? `Meta: ${brl(pot.goal_amount)}` : 'Sem meta definida'}</span></div><div className="row-actions"><button className="icon-button" aria-label={`Editar cofrinho ${pot.name}`} title="Editar cofrinho" onClick={() => openEditPot(pot)}><Pencil size={15}/></button><button className="icon-button danger" aria-label={`Excluir cofrinho ${pot.name}`} title="Excluir cofrinho" onClick={() => deletePot(pot)}><Trash2 size={15}/></button></div></div><strong className="pot-balance">{brl(pot.balance)}</strong>{pot.goal_due_date && pot.goal_amount && <div className="goal-suggestion">{(() => { const remaining=Math.max(0,Number(pot.goal_amount)-pot.balance); const today=new Date(); const due=new Date(`${pot.goal_due_date}T12:00:00`); const months=Math.max(1,(due.getFullYear()-today.getFullYear())*12+due.getMonth()-today.getMonth()+1); return remaining===0?'Meta alcançada!':`Para chegar até ${fmtDate(pot.goal_due_date)}, guarde cerca de ${brl(remaining/months)} por mês.` })()}</div>}{progress !== null && <div className="pot-progress"><div><span>Progresso da meta</span><b>{Math.round(progress)}%</b></div><i><span style={{width:`${progress}%`}}/></i></div>}<div className="pot-actions"><button className="button subtle" onClick={() => openMovement(pot, 'deposit')}><ArrowDownLeft size={15}/> Guardar</button><button className="button subtle" onClick={() => openMovement(pot, 'withdrawal')}><ArrowUpRight size={15}/> Retirar</button></div></article> })}</section> : <section className="panel"><EmptyState title="Crie seu primeiro cofrinho" text="Pode ser sua reserva, uma viagem ou o saldo que quer manter guardado. Você informa o saldo inicial e registra entradas e retiradas." action={<button className="button primary" onClick={openNewPot}><Plus size={15}/> Criar cofrinho</button>}/></section>}
         <section className="panel entries-panel"><PanelHeading title="Movimentações do mês" subtitle={`Entradas e retiradas em ${monthName(selectedMonth)}`}/>{monthMovements.length ? <div className="table-wrap"><table className="entry-table"><thead><tr><th>Cofrinho</th><th>Tipo</th><th>Data</th><th>Observação</th><th className="align-right">Valor</th><th/></tr></thead><tbody>{[...monthMovements].sort((a,b)=>b.moved_on.localeCompare(a.moved_on)).map((item)=><tr key={item.id}><td>{pots.find(p=>p.id===item.pot_id)?.name || 'Cofrinho'}</td><td>{item.kind==='deposit'?'Guardado':'Retirado'}</td><td>{fmtDate(item.moved_on)}</td><td>{item.note || '—'}</td><td className={`align-right amount ${item.kind==='deposit'?'income-text':'withdrawal-text'}`}>{item.kind==='deposit'?'+':'−'} {brl(item.amount)}</td><td><button className="icon-button danger" aria-label={`Excluir movimentação de ${brl(item.amount)}`} title="Excluir movimentação" onClick={()=>deleteMovement(item)}><Trash2 size={15}/></button></td></tr>)}</tbody></table></div> : <EmptyState title="Sem movimentações neste mês" text="As movimentações que você registrar nos cofrinhos aparecerão aqui."/>}</section>
       </> : activePage === 'categories' ? <>
@@ -491,6 +683,9 @@ export default function App() {
     </main>
 
     {entryModal && <EntryModal title={editingEntryId ? 'Editar lançamento' : 'Novo lançamento'} value={entryForm} cards={cards} customCategories={userCategories} onChange={setEntryForm} onClose={() => setEntryModal(false)} onSubmit={saveEntry} />}
+    {csvModal && <CsvImportModal rows={csvRows} error={csvError} busy={csvBusy} onFile={importCsvFile} onTemplate={downloadCsvTemplate} onImport={importCsvRows} onClose={() => setCsvModal(false)} />}
+    {historyModal && <HistoryModal item={historyModal} rows={historyRows} onClose={() => setHistoryModal(null)} />}
+    {attachmentModal && <AttachmentModal item={attachmentModal.item} files={attachmentModal.files} onOpen={openAttachment} onDelete={deleteAttachment} onClose={() => setAttachmentModal(null)} />}
     {cardModal && <CardModal title={editingCardId ? 'Editar cartão' : 'Cadastrar cartão'} value={cardForm} onChange={setCardForm} onClose={() => setCardModal(false)} onSubmit={saveCard} />}
     {invoiceConfirm && <InvoiceConfirmModal value={invoiceConfirm} month={selectedMonth} onClose={() => setInvoiceConfirm(null)} onConfirm={confirmInvoiceChange} />}
     {confirmation && <ConfirmationModal value={confirmation} onClose={() => setConfirmation(null)} onConfirm={runConfirmation} />}
@@ -523,12 +718,13 @@ function EmptyState({ title, text, action }) {
   return <div className="empty-state"><span className="empty-icon"><Wallet size={19} /></span><b>{title}</b><span>{text}</span>{action}</div>
 }
 
-function EntryTable({ entries, onEdit, onDelete, onSettle, emptyText = 'Não há lançamentos neste mês.' }) {
+function EntryTable({ entries, onEdit, onDelete, onSettle, onHistory, onAttachments, attachments = [], emptyText = 'Não há lançamentos neste mês.' }) {
   if (!entries.length) return <EmptyState title="Nada para mostrar" text={emptyText} />
-  return <div className="table-wrap"><table className="entry-table"><thead><tr><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Data / vencimento</th><th>Situação</th><th className="align-right">Valor</th><th aria-label="Ações" /></tr></thead><tbody>{entries.map((item) => { const displayDate = item.card_id ? item.spent_on : item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on); return <tr key={item.id}><td><div className="entry-name"><span className={`entry-kind-icon ${item.kind}`} title={item.kind === 'income' ? 'Receita' : 'Despesa'}>{item.kind === 'income' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><b>{item.description}</b><small>{item.installment_number ? `Parcela ${item.installment_number} de ${item.installment_count}` : item.kind === 'income' ? 'Receita' : 'Despesa'}</small></span></div></td><td>{item.category}</td><td>{item.kind === 'income' ? '—' : paymentLabel(item)}</td><td>{fmtDate(displayDate)}</td><td><span className={`status-pill ${item.status}`}>{item.status === 'pending' ? 'Pendente' : item.kind === 'income' ? 'Recebida' : 'Paga'}</span></td><td className={`align-right amount ${item.kind === 'income' ? 'income-text' : ''}`}>{item.kind === 'income' ? '+' : '−'} {brl(item.amount)}</td><td><div className="row-actions">{item.status === 'pending' && <button className="icon-button" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} title={item.kind === 'income' ? 'Marcar recebida' : 'Marcar paga'} onClick={() => onSettle(item)}><Check size={15} /></button>}<button className="icon-button" aria-label={`Editar ${item.description}`} title="Editar" onClick={() => onEdit(item)}><Pencil size={15} /></button><button className="icon-button danger" aria-label={`Excluir ${item.description}`} title="Excluir" onClick={() => onDelete(item)}><Trash2 size={15} /></button></div></td></tr> })}</tbody></table></div>
+  return <div className="table-wrap"><table className="entry-table"><thead><tr><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Data / vencimento</th><th>Situação</th><th className="align-right">Valor</th><th aria-label="Ações" /></tr></thead><tbody>{entries.map((item) => { const displayDate = item.card_id ? item.spent_on : item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on); return <tr key={item.id}><td><div className="entry-name"><span className={`entry-kind-icon ${item.kind}`} title={item.kind === 'income' ? 'Receita' : 'Despesa'}>{item.kind === 'income' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><b>{item.description}</b><small>{item.installment_number ? `Parcela ${item.installment_number} de ${item.installment_count} · ` : ''}{item.kind === 'income' ? 'Receita' : 'Despesa'}{item.paid_by ? ` · Pago por ${item.paid_by}` : ''}{item.shared_with?.length ? ` · Rateio: ${shareBreakdown(item)}` : ''}{item.notes ? ` · ${item.notes}` : ''}</small></span></div></td><td>{item.category}</td><td>{item.kind === 'income' ? '—' : paymentLabel(item)}</td><td>{fmtDate(displayDate)}</td><td><span className={`status-pill ${item.status}`}>{item.status === 'pending' ? 'Pendente' : item.kind === 'income' ? 'Recebida' : 'Paga'}</span></td><td className={`align-right amount ${item.kind === 'income' ? 'income-text' : ''}`}>{item.kind === 'income' ? '+' : '−'} {brl(item.amount)}</td><td><div className="row-actions">{item.status === 'pending' && <button className="icon-button" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} title={item.kind === 'income' ? 'Marcar recebida' : 'Marcar paga'} onClick={() => onSettle(item)}><Check size={15} /></button>}{attachments.some((file) => file.expense_id === item.id) && <button className="icon-button" aria-label={`Abrir comprovantes de ${item.description}`} title="Comprovantes" onClick={() => onAttachments(item)}><Paperclip size={15}/></button>}<button className="icon-button" aria-label={`Ver histórico de ${item.description}`} title="Histórico" onClick={() => onHistory(item)}><History size={15}/></button><button className="icon-button" aria-label={`Editar ${item.description}`} title="Editar" onClick={() => onEdit(item)}><Pencil size={15} /></button><button className="icon-button danger" aria-label={`Excluir ${item.description}`} title="Excluir" onClick={() => onDelete(item)}><Trash2 size={15} /></button></div></td></tr> })}</tbody></table></div>
 }
 
 function EntryModal({ title, value, cards, customCategories = [], onChange, onClose, onSubmit }) {
+  const [attachmentError, setAttachmentError] = useState('')
   const set = (key, next) => onChange({ ...value, [key]: next })
   const categories = [...(value.kind === 'income' ? incomeCategories : expenseCategories), ...customCategories.filter((item) => item.kind === value.kind).map((item) => item.name)]
   return <Modal title={title} onClose={onClose}><form className="modal-form" onSubmit={onSubmit}>
@@ -541,6 +737,9 @@ function EntryModal({ title, value, cards, customCategories = [], onChange, onCl
     {value.kind === 'expense' && value.payment_method === 'credit_card' && <label>Cartão de crédito<select required value={value.card_id} onChange={(event) => set('card_id', event.target.value)}><option value="">Escolha o cartão</option>{cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label>}
     {value.kind === 'expense' && value.payment_method === 'credit_card' && value.card_id && <><label>Mês da primeira fatura<input type="month" required value={value.invoice_month} onChange={(event) => set('invoice_month', event.target.value)} /></label>{!title.startsWith('Editar') && <><label>Parcelas<select value={value.installment_count || '1'} onChange={event=>set('installment_count',event.target.value)}>{Array.from({length:24},(_,i)=>i+1).map(n=><option key={n} value={n}>{n===1?'À vista':`${n} parcelas`}</option>)}</select></label>{Number(value.installment_count)>1&&<p className="modal-help">O total será dividido entre as faturas mensais; as parcelas serão criadas como pendentes.</p>}</>}</>}
     {value.status === 'settled' && <label>Data de pagamento / recebimento<input type="date" value={value.settled_on || value.spent_on} onChange={(event) => set('settled_on', event.target.value)} /></label>}
+    {value.kind === 'expense' && <><div className="rateio-label"><Users size={15}/> Rateio entre pessoas</div><div className="modal-form-two"><label>Quem pagou<input maxLength="80" value={value.paid_by || ''} onChange={(event) => set('paid_by', event.target.value)} placeholder="Ex.: David" /></label><label>Dividir igualmente entre<input maxLength="240" value={value.shared_with || ''} onChange={(event) => set('shared_with', event.target.value)} placeholder="Nomes separados por vírgula" /></label></div><p className="modal-help">O valor será rateado igualmente entre os nomes informados; centavos restantes são distribuídos nas primeiras partes.</p></>}
+    <label>Observações (opcional)<textarea maxLength="1000" rows="2" value={value.notes || ''} onChange={(event) => set('notes', event.target.value)} placeholder="Detalhes ou referência do lançamento" /></label>
+    <label>Anexar comprovantes (PDF, JPG, PNG ou WebP · até 10 MB cada)<input type="file" multiple accept="application/pdf,image/jpeg,image/png,image/webp" onChange={(event) => { const files = [...event.target.files]; const invalid = files.find((file) => file.size > 10 * 1024 * 1024 || !['application/pdf','image/jpeg','image/png','image/webp'].includes(file.type)); if (invalid) { setAttachmentError('Escolha PDF, JPG, PNG ou WebP com até 10 MB por arquivo.'); onChange({ ...value, attachmentFiles: [] }); event.target.value = ''; return } setAttachmentError(''); set('attachmentFiles', files) }} />{attachmentError && <small className="form-error">{attachmentError}</small>}{value.attachmentFiles?.length > 0 && <small>{value.attachmentFiles.map((file) => file.name).join(', ')}</small>}</label>
     <div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button className="button primary"><Check size={15} /> Salvar lançamento</button></div>
   </form></Modal>
 }
@@ -589,6 +788,30 @@ function EntryFilters({ value, onChange, categories }) {
   const set = (key, next) => onChange({ ...value, [key]: next })
   const active = value.search || value.kind !== 'all' || value.status !== 'all' || value.category !== 'all' || value.payment !== 'all'
   return <div className="entry-filters"><label className="search-field"><Search size={16}/><input aria-label="Buscar por descrição, categoria, forma de pagamento ou valor" placeholder="Buscar lançamento" value={value.search} onChange={(event) => set('search', event.target.value)}/></label><label><SlidersHorizontal size={14}/><select aria-label="Filtrar por tipo" value={value.kind} onChange={(event) => set('kind', event.target.value)}><option value="all">Todos os tipos</option><option value="expense">Despesas</option><option value="income">Receitas</option></select></label><label><select aria-label="Filtrar por situação" value={value.status} onChange={(event) => set('status', event.target.value)}><option value="all">Todas as situações</option><option value="pending">Pendentes</option><option value="settled">Pagas / recebidas</option></select></label><label><select aria-label="Filtrar por categoria" value={value.category} onChange={(event) => set('category', event.target.value)}><option value="all">Todas as categorias</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label><select aria-label="Filtrar por forma de pagamento" value={value.payment} onChange={(event) => set('payment', event.target.value)}><option value="all">Todas as formas</option><option value="pix">Pix</option><option value="cash">Dinheiro</option><option value="debit_card">Débito</option><option value="credit_card">Crédito</option><option value="other">Outro</option></select></label>{active && <button type="button" className="button subtle clear-filters" onClick={() => onChange({search:'',kind:'all',status:'all',category:'all',payment:'all'})}>Limpar filtros</button>}</div>
+}
+
+function CsvImportModal({ rows, error, busy, onFile, onTemplate, onImport, onClose }) {
+  const validCount = rows.filter((row) => !row.error).length
+  return <Modal title="Importar lançamentos por CSV" onClose={onClose}><div className="modal-form csv-import-form"><p className="modal-help">Use o modelo para importar despesas e receitas. Datas aceitas: AAAA-MM-DD ou DD/MM/AAAA. Para rateio, separe os nomes com |.</p><button type="button" className="button subtle" onClick={onTemplate}><Download size={15}/> Baixar modelo CSV</button><label>Arquivo CSV<input type="file" accept=".csv,text/csv" onChange={(event) => event.target.files?.[0] && onFile(event.target.files[0])}/></label>{error && <div className="notice" role="alert">{error}</div>}{rows.length > 0 && <><div className="csv-summary">{validCount} linhas válidas · {rows.length-validCount} com erro · máximo de 500 por importação</div><div className="table-wrap csv-preview"><table className="entry-table"><thead><tr><th>Linha</th><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Validação</th></tr></thead><tbody>{rows.slice(0,20).map((row)=><tr key={row.line}><td>{row.line}</td><td>{row.value.kind === 'income' ? 'Receita' : 'Despesa'}</td><td>{row.value.description}</td><td>{brl(row.value.amount)}</td><td className={row.error ? 'withdrawal-text' : 'income-text'}>{row.error || 'Pronta'}</td></tr>)}</tbody></table></div>{rows.length > 20 && <small>Prévia das primeiras 20 linhas; todas as {rows.length} serão validadas.</small>}</>}<div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button type="button" className="button primary" disabled={busy || validCount === 0} onClick={onImport}><FileUp size={15}/>{busy ? 'Importando…' : `Importar ${validCount || ''} lançamentos`}</button></div></div></Modal>
+}
+
+function HistoryModal({ item, rows, onClose }) {
+  const labels = { created: 'Lançamento criado', updated: 'Lançamento editado', settled: 'Marcado como pago/recebido', deleted: 'Lançamento excluído' }
+  const describe = (row) => {
+    if (row.action === 'created') return `Valor inicial: ${brl(row.new_data?.amount)} · ${row.new_data?.category || 'Sem categoria'}`
+    if (row.action === 'deleted') return `Último valor registrado: ${brl(row.old_data?.amount)} · ${row.old_data?.status === 'settled' ? 'Pago/recebido' : 'Pendente'}`
+    const old = row.old_data || {}; const next = row.new_data || {}; const changes = []
+    if (Number(old.amount) !== Number(next.amount)) changes.push(`Valor: ${brl(old.amount)} → ${brl(next.amount)}`)
+    if (old.status !== next.status) changes.push(`Situação: ${old.status === 'settled' ? 'paga/recebida' : 'pendente'} → ${next.status === 'settled' ? 'paga/recebida' : 'pendente'}`)
+    if (old.category !== next.category) changes.push(`Categoria: ${old.category} → ${next.category}`)
+    if (old.due_date !== next.due_date) changes.push(`Vencimento: ${fmtDate(old.due_date)} → ${fmtDate(next.due_date)}`)
+    return changes.join(' · ') || 'Detalhes do lançamento atualizados.'
+  }
+  return <Modal title={`Histórico · ${item.description}`} onClose={onClose}><div className="history-list">{rows.length ? rows.map((row)=><article className="history-item" key={row.id}><div><b>{labels[row.action] || 'Alteração'}</b><time>{new Date(row.changed_at).toLocaleString('pt-BR')}</time></div><p>{describe(row)}</p></article>) : <p className="modal-help">Ainda não há alterações registradas para este lançamento.</p>}</div><div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Fechar</button></div></Modal>
+}
+
+function AttachmentModal({ item, files, onOpen, onDelete, onClose }) {
+  return <Modal title={`Comprovantes · ${item.description}`} onClose={onClose}><div className="attachment-list">{files.length ? files.map((file)=><div className="attachment-item" key={file.id}><Paperclip size={16}/><span><b>{file.file_name}</b><small>{(file.size_bytes/1024/1024).toFixed(2)} MB · {fmtDate(file.created_at.slice(0,10))}</small></span><button className="button subtle" onClick={()=>onOpen(file)}>Abrir</button><button className="icon-button danger" aria-label={`Excluir anexo ${file.file_name}`} title="Excluir anexo" onClick={()=>onDelete(file)}><Trash2 size={15}/></button></div>) : <p className="modal-help">Nenhum comprovante encontrado.</p>}</div><div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Fechar</button></div></Modal>
 }
 
 function RecurringModal({ title, submitLabel, isEditing, value, cards, customCategories = [], onChange, onClose, onSubmit }) {

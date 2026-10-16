@@ -86,3 +86,15 @@ O lembrete por e-mail usa uma Supabase Edge Function agendada e o serviço Resen
    ```
 
 A função envia um resumo apenas dos lançamentos pendentes que vencem na antecedência escolhida e registra cada envio para evitar repetição. O agendamento usa `pg_cron` + `pg_net` e guarda o segredo no Vault, conforme o [guia oficial do Supabase para agendar Edge Functions](https://supabase.com/docs/guides/functions/schedule-functions). Você pode conferir/pausar o job na página Cron do Supabase.
+
+
+### Importação, rateio, fechamentos, histórico e comprovantes (migração 009)
+
+Depois da migração 008, execute `supabase/migrations/202610160009_collaboration_tools.sql` no SQL Editor. A migração adiciona rateio de despesas, fechamento mensal, trilha de auditoria e metadados de anexos; também cria o bucket privado `expense-receipts` com políticas por usuário. Cada pessoa vê somente os próprios registros e arquivos.
+
+- **CSV:** use o botão Importar CSV na visão mensal e baixe o modelo para ver as colunas. Campos obrigatórios: `tipo`, `descricao`, `valor`, `categoria`, `data`; datas aceitas `AAAA-MM-DD` ou `DD/MM/AAAA`. Até 500 linhas são importadas por vez. Pagamentos em crédito exigem o nome exato de um cartão já cadastrado. O rateio usa nomes separados por `|` na coluna `dividido_com`.
+- **Rateio:** ao registrar uma despesa, informe quem pagou e os nomes entre os quais dividir o total. O sistema calcula partes iguais e distribui os centavos restantes entre as primeiras pessoas. Os nomes são apenas rótulos neste espaço privado; cada pessoa não precisa ter uma conta no sistema.
+- **Fechamento mensal:** salve um retrato das despesas previstas, realizadas, receitas e limites por categoria. Alterações posteriores nos lançamentos não mudam o retrato automaticamente; use Atualizar fechamento para registrar uma nova versão dos números.
+- **Reserva de emergência:** em Cofrinhos, use Sugerir meta de emergência. A sugestão considera a média dos últimos três meses nas categorias Moradia, Alimentação, Saúde e Transporte, multiplicada por três. Se ainda não houver histórico, informe a meta manualmente.
+- **Histórico:** cada lançamento mantém eventos de criação, edição, pagamento/recebimento e exclusão. O histórico é preenchido automaticamente pelo banco.
+- **Comprovantes e notas:** anexe PDFs ou imagens JPG, PNG e WebP de até 10 MB cada. Os arquivos ficam privados no Supabase Storage e são abertos por links temporários. Observações e rateio ficam no próprio lançamento.

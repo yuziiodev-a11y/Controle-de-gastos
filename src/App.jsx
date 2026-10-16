@@ -9,9 +9,10 @@ import { brl, localDate, monthOf, monthStart, fmtDate, monthName, normalizeSearc
 import { EmptyState, Modal, MonthPicker, PanelHeading, SummaryCard, YearPicker } from './components/UI.jsx'
 import { AuthScreen, SetupScreen, authErrorMessage } from './components/AuthScreens.jsx'
 import { TutorialPage } from './pages/TutorialPage.jsx'
+import { CalendarPage } from './pages/CalendarPage.jsx'
 import { EntryTable, EntryModal, CardModal, PotModal, CdiStatusPanel, MovementModal, BudgetModal, EntryFilters, GlobalSearchModal, HistoryModal, AttachmentModal, RecurringModal, ProfileModal, ReminderModal, ShareSettlementModal, InvoiceConfirmModal, ConfirmationModal } from './components/FinanceComponents.jsx'
 
-const APP_PAGES = new Set(['month', 'year', 'categories', 'cards', 'responsible', 'savings', 'recurring', 'tutorial'])
+const APP_PAGES = new Set(['month', 'year', 'calendar', 'categories', 'cards', 'responsible', 'savings', 'recurring', 'tutorial'])
 
 export default function App() {
   const [session, setSession] = useState(null)
@@ -761,6 +762,32 @@ export default function App() {
     const daysRemaining = Math.round((due.getTime() - todayForInvoiceAlert.getTime()) / 86400000)
     return daysRemaining <= 7 ? [{ card, dueDate, daysRemaining }] : []
   }).sort((a, b) => a.daysRemaining - b.daysRemaining)
+  const calendarEvents = [
+    ...monthEntries.map((item) => ({
+      id: `entry-${item.id}`,
+      date: item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on),
+      type: item.kind,
+      title: item.description,
+      subtitle: `${item.category} · ${item.status === 'pending' ? 'Vencimento' : item.kind === 'income' ? 'Recebida' : 'Paga'}`,
+      amount: Number(item.amount),
+      status: item.status,
+      entry: item,
+    })),
+    ...monthCards.filter((card) => card.invoiceEntries.length > 0).map((card) => {
+      const [year, month] = selectedMonth.split('-').map(Number)
+      const lastDay = new Date(year, month, 0).getDate()
+      return {
+        id: `invoice-${card.id}`,
+        date: `${selectedMonth}-${String(Math.min(Number(card.due_day), lastDay)).padStart(2, '0')}`,
+        type: 'invoice',
+        title: `Fatura ${card.name}`,
+        subtitle: `Vencimento · ${monthName(selectedMonth)}`,
+        amount: card.invoiceTotal,
+        paid: card.invoicePaid,
+        cardId: card.id,
+      }
+    }),
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title, 'pt-BR'))
   const responsibleMonthlyPayments = entries
     .filter((item) => item.kind === 'expense' && item.card_id && item.status === 'pending' && item.invoice_month?.startsWith(selectedMonth))
     .reduce((people, item) => {
@@ -838,6 +865,7 @@ export default function App() {
       <div className="sidebar-group-label">SEU DINHEIRO</div>
       <button className={`nav-item ${activePage === 'month' ? 'active' : ''}`} aria-current={activePage === 'month' ? 'page' : undefined} onClick={() => { setMonthTab('overview'); setActivePage('month') }}><LayoutDashboard size={17} /> Visão mensal</button>
       <button className={`nav-item ${activePage === 'year' ? 'active' : ''}`} aria-current={activePage === 'year' ? 'page' : undefined} onClick={() => setActivePage('year')}><ChartNoAxesCombined size={17} /> Visão anual</button>
+      <button className={`nav-item ${activePage === 'calendar' ? 'active' : ''}`} aria-current={activePage === 'calendar' ? 'page' : undefined} onClick={() => setActivePage('calendar')}><CalendarDays size={17} /> Calendário</button>
       <button className={`nav-item ${activePage === 'categories' ? 'active' : ''}`} aria-current={activePage === 'categories' ? 'page' : undefined} onClick={() => setActivePage('categories')}><Tags size={17} /> Categorias</button>
       <button className={`nav-item ${activePage === 'cards' ? 'active' : ''}`} aria-current={activePage === 'cards' ? 'page' : undefined} onClick={() => setActivePage('cards')}><CreditCard size={17} /> Cartões e faturas</button>
       <button className={`nav-item ${activePage === 'responsible' ? 'active' : ''}`} aria-current={activePage === 'responsible' ? 'page' : undefined} onClick={() => setActivePage('responsible')}><Users size={17} /> Por pessoa</button>
@@ -850,7 +878,7 @@ export default function App() {
 
     <main className="main-content" id="main-content" tabIndex="-1">
       <header className="page-header">
-        <div><p className="eyebrow">CONTROLE FINANCEIRO</p><h1>{activePage === 'month' ? 'Visão mensal' : activePage === 'year' ? 'Visão anual' : activePage === 'categories' ? 'Categorias' : activePage === 'cards' ? 'Cartões e faturas' : activePage === 'responsible' ? 'Por pessoa' : activePage === 'savings' ? 'Cofrinhos' : activePage === 'tutorial' ? 'Tutorial do sistema' : 'Recorrências'}</h1><p className="page-subtitle">{activePage === 'month' ? 'Acompanhe o que entra, o que sai e o que ainda está pendente.' : activePage === 'year' ? 'Compare suas entradas e despesas mês a mês.' : activePage === 'categories' ? 'Organize seus lançamentos com categorias próprias.' : activePage === 'cards' ? 'Gerencie seus cartões e acompanhe cada fatura.' : activePage === 'responsible' ? 'Confira quanto cada responsável tem a pagar nas faturas.' : activePage === 'savings' ? 'Acompanhe o dinheiro que você separou para guardar.' : activePage === 'tutorial' ? 'Um guia rápido para entender cada área e registrar suas movimentações.' : 'Automatize o registro mensal das contas e receitas fixas.'}</p></div>
+        <div><p className="eyebrow">CONTROLE FINANCEIRO</p><h1>{activePage === 'month' ? 'Visão mensal' : activePage === 'year' ? 'Visão anual' : activePage === 'calendar' ? 'Calendário financeiro' : activePage === 'categories' ? 'Categorias' : activePage === 'cards' ? 'Cartões e faturas' : activePage === 'responsible' ? 'Por pessoa' : activePage === 'savings' ? 'Cofrinhos' : activePage === 'tutorial' ? 'Tutorial do sistema' : 'Recorrências'}</h1><p className="page-subtitle">{activePage === 'month' ? 'Acompanhe o que entra, o que sai e o que ainda está pendente.' : activePage === 'year' ? 'Compare suas entradas e despesas mês a mês.' : activePage === 'calendar' ? 'Veja contas, receitas e vencimentos distribuídos ao longo do mês.' : activePage === 'categories' ? 'Organize seus lançamentos com categorias próprias.' : activePage === 'cards' ? 'Gerencie seus cartões e acompanhe cada fatura.' : activePage === 'responsible' ? 'Confira quanto cada responsável tem a pagar nas faturas.' : activePage === 'savings' ? 'Acompanhe o dinheiro que você separou para guardar.' : activePage === 'tutorial' ? 'Um guia rápido para entender cada área e registrar suas movimentações.' : 'Automatize o registro mensal das contas e receitas fixas.'}</p></div>
         <div className="header-actions">
           <div className="header-utility-actions">
             <button className="icon-button privacy-toggle" type="button" aria-label={hideValues ? 'Mostrar valores' : 'Ocultar valores'} aria-pressed={hideValues} title={hideValues ? 'Mostrar valores' : 'Ocultar valores'} onClick={() => setHideValues((hidden) => !hidden)}>{hideValues ? <Eye size={18}/> : <EyeOff size={18}/>}</button>
@@ -859,7 +887,7 @@ export default function App() {
           </div>
           <div className="header-page-actions">
             {activePage === 'year' ? <YearPicker value={selectedYear} onChange={setSelectedYear}/> : <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />}
-            {activePage === 'month' && <button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button>}
+            {(activePage === 'month' || activePage === 'calendar') && <button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button>}
             {activePage === 'cards' && <button className="button primary" onClick={openNewCard}><Plus size={17} /> Novo cartão</button>}
             {activePage === 'savings' && <button className="button primary" onClick={openNewPot}><Plus size={17} /> Novo cofrinho</button>}
             {activePage === 'recurring' && <button className="button primary" onClick={openNewRecurring}><Plus size={17} /> Nova recorrência</button>}
@@ -930,7 +958,7 @@ export default function App() {
           {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} highlightedEntryId={highlightedEntryId} attachments={attachments} defaultResponsible={userDisplayName(session.user)} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
         </section>
         </div>}
-      </> : activePage === 'tutorial' ? <TutorialPage onNavigate={(page, tab) => { if (tab) setMonthTab(tab); setActivePage(page); window.scrollTo({ top: 0, behavior: 'smooth' }) }} /> : activePage === 'year' ? <>
+      </> : activePage === 'calendar' ? <CalendarPage month={selectedMonth} events={calendarEvents} onOpenEntry={openEditEntry} onOpenInvoice={(cardId) => { setInvoiceCardFilter(cardId); setInvoiceStatusFilter('all'); setActivePage('cards') }} onCreateEntry={openNewEntry} /> : activePage === 'tutorial' ? <TutorialPage onNavigate={(page, tab) => { if (tab) setMonthTab(tab); setActivePage(page); window.scrollTo({ top: 0, behavior: 'smooth' }) }} /> : activePage === 'year' ? <>
         {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setMonthTab('overview');setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
       </> : activePage === 'responsible' ? <>
         <section className="responsible-page-intro"><div className="responsible-intro-copy"><span className="eyebrow">RESUMO DO MÊS</span><h2>Pagamentos por pessoa</h2><p>Valores pendentes nas faturas de <b>{monthName(selectedMonth)}</b>, distribuídos pelos responsáveis de cada compra.</p></div><div className="responsible-intro-total"><span>Total pendente</span><strong>{brl(responsibleMonthlyPaymentList.reduce((sum, person) => sum + person.total, 0))}</strong><small>{responsibleMonthlyPaymentList.length} responsável(is) com valores neste mês</small></div></section>

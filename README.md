@@ -21,6 +21,8 @@ O Supabase fornece o backend gerenciado, então não há servidor Node separado.
 7. Na pasta do projeto, execute `npm install` e depois `npm run dev`.
 8. Abra o endereço local mostrado pelo Vite e crie sua conta.
 
+Para habilitar **Esqueci minha senha**, no painel Supabase abra **Authentication > URL Configuration** e adicione os endereços de retorno em **Redirect URLs**. Inclua o endereço local (normalmente `http://localhost:5173`) e o domínio publicado do app. A recuperação envia um link por e-mail; ao abrir, a pessoa define e confirma a nova senha na tela do Meu Controle.
+
 O frontend usa apenas a chave publicável. Nunca coloque uma chave `service_role` no navegador ou no arquivo `.env` do frontend. A visão mensal pode ser alternada para meses passados e futuros; contas podem ser editadas e marcadas como pagas/recebidas. Pagamentos em Pix, dinheiro e débito são despesas normais, mas não entram na fatura do cartão. Cartões têm uma seção separada, com totais de fatura do mês selecionado. Cada parcela deve ser lançada separadamente, associada ao mês da fatura correspondente.
 
 ### Cofrinhos

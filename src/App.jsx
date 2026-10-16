@@ -12,6 +12,7 @@ const monthOf = (date = new Date()) => localDate(date).slice(0, 7)
 const monthStart = (key) => `${key}-01`
 const fmtDate = (value) => value ? new Date(`${value}T12:00:00`).toLocaleDateString('pt-BR') : '—'
 const monthName = (key, options = { month: 'long', year: 'numeric' }) => new Date(`${key}-15T12:00:00`).toLocaleDateString('pt-BR', options)
+const normalizeSearchText = (value) => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').trim()
 const paymentLabel = (item) => {
   if (item.payment_method === 'credit_card') return item.cards?.name || 'Cartão de crédito'
   if (item.payment_method === 'debit_card') return 'Cartão de débito'
@@ -117,8 +118,13 @@ export default function App() {
   const [authMode, setAuthMode] = useState('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordRecovery, setPasswordRecovery] = useState(false)
   const [message, setMessage] = useState('')
   const [entries, setEntries] = useState([])
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false)
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('')
+  const [highlightedEntryId, setHighlightedEntryId] = useState(null)
   const [attachments, setAttachments] = useState([])
   const [historyModal, setHistoryModal] = useState(null)
   const [historyRows, setHistoryRows] = useState([])
@@ -168,11 +174,33 @@ export default function App() {
   useEffect(() => {
     if (!supabase) { setLoading(false); return }
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setLoading(false) })
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, value) => setSession(value))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, value) => {
+      setSession(value)
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
+    })
     return () => subscription.unsubscribe()
   }, [])
 
   useEffect(() => { if (session) loadData() }, [session, selectedMonth])
+
+  useEffect(() => {
+    if (!highlightedEntryId) return undefined
+    const scrollTimer = window.setTimeout(() => document.querySelector(`[data-entry-id="${highlightedEntryId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 220)
+    const clearTimer = window.setTimeout(() => setHighlightedEntryId(null), 4200)
+    return () => { window.clearTimeout(scrollTimer); window.clearTimeout(clearTimer) }
+  }, [highlightedEntryId, activePage, selectedMonth, entries])
+
+  useEffect(() => {
+    const handleGlobalSearchShortcut = (event) => {
+      const target = event.target
+      const isTyping = target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+      if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey && !isTyping && !globalSearchOpen) {
+        event.preventDefault(); setGlobalSearchQuery(''); setGlobalSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', handleGlobalSearchShortcut)
+    return () => window.removeEventListener('keydown', handleGlobalSearchShortcut)
+  }, [globalSearchOpen])
 
   async function loadData() {
     const { error: recurrenceError } = await supabase.rpc('generate_recurring_expenses', { p_month: monthStart(selectedMonth) })
@@ -210,8 +238,27 @@ export default function App() {
     const result = authMode === 'login'
       ? await supabase.auth.signInWithPassword({ email, password })
       : await supabase.auth.signUp({ email, password })
-    if (result.error) setMessage(result.error.message)
+    if (result.error) setMessage(authErrorMessage(result.error, authMode))
     else if (authMode === 'signup' && !result.data.session) setMessage('Cadastro feito. Confirme seu e-mail para entrar.')
+  }
+
+  async function sendPasswordRecovery(event) {
+    event.preventDefault(); setMessage('')
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
+    if (error) setMessage(authErrorMessage(error, 'recovery'))
+    else setMessage('Se houver uma conta com esse e-mail, enviaremos um link para redefinir a senha.')
+  }
+
+  async function updateRecoveredPassword(event) {
+    event.preventDefault(); setMessage('')
+    if (password.length < 6) { setMessage('A senha precisa ter pelo menos 6 caracteres.'); return }
+    if (password !== confirmPassword) { setMessage('As senhas não são iguais. Confira e tente novamente.'); return }
+    const { error } = await supabase.auth.updateUser({ password })
+    if (error) setMessage(authErrorMessage(error, 'signup'))
+    else {
+      setPasswordRecovery(false); setPassword(''); setConfirmPassword('')
+      setMessage('Senha atualizada com sucesso.')
+    }
   }
 
   function openNewEntry() { setEditingEntryId(null); setEntryForm(initialEntry(selectedMonth)); setEntryModal(true) }
@@ -625,10 +672,22 @@ export default function App() {
   const totalGoalSaved = savingsGoals.reduce((sum, pot) => sum + Math.min(pot.balance, Number(pot.goal_amount)), 0)
   const totalGoalRemaining = savingsGoals.reduce((sum, pot) => sum + Math.max(0, Number(pot.goal_amount) - pot.balance), 0)
   const visibleHistory = recentHistory.filter((row) => (historyAction === 'all' || row.action === historyAction) && (!historySearch || row.description.toLocaleLowerCase('pt-BR').includes(historySearch.toLocaleLowerCase('pt-BR'))))
+  const globalSearchResults = globalSearchQuery.trim() ? entries.filter((item) => {
+    const query = normalizeSearchText(globalSearchQuery)
+    const searchable = [item.description, item.category, paymentLabel(item), item.amount, item.notes, item.paid_by, ...(item.shared_with || []), item.cards?.name, item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on), item.invoice_month].map(normalizeSearchText).join(' ')
+    return searchable.includes(query)
+  }).sort((a, b) => (b.status === 'pending' ? b.due_date : (b.settled_on || b.spent_on)).localeCompare(a.status === 'pending' ? a.due_date : (a.settled_on || a.spent_on))) : []
+
+  function openGlobalSearchResult(item) {
+    const relevantDate = item.card_id ? (item.invoice_month || item.spent_on) : (item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on))
+    setGlobalSearchOpen(false); setGlobalSearchQuery(''); setEntryFilters({ search: '', kind: 'all', status: 'all', category: 'all', payment: 'all' })
+    setSelectedMonth(relevantDate.slice(0, 7)); setActivePage(item.card_id ? 'cards' : 'month'); setHighlightedEntryId(item.id)
+  }
 
   if (loading) return <main className="center-screen">Carregando…</main>
   if (!configured) return <SetupScreen />
-  if (!session) return <AuthScreen mode={authMode} setMode={setAuthMode} email={email} setEmail={setEmail} password={password} setPassword={setPassword} onSubmit={handleAuth} message={message} />
+  if (passwordRecovery && session) return <AuthScreen mode="reset" setMode={setAuthMode} email={email} setEmail={setEmail} password={password} setPassword={setPassword} confirmPassword={confirmPassword} setConfirmPassword={setConfirmPassword} onSubmit={updateRecoveredPassword} message={message} onCancelRecovery={() => { setPasswordRecovery(false); setMessage('') }} />
+  if (!session) return <AuthScreen mode={authMode} setMode={(nextMode) => { setAuthMode(nextMode); setMessage(''); setPassword('') }} email={email} setEmail={setEmail} password={password} setPassword={setPassword} onSubmit={authMode === 'forgot' ? sendPasswordRecovery : handleAuth} message={message} />
 
   return <div className={`app-shell ${hideValues ? 'values-hidden' : ''}`}>
     <a className="skip-link" href="#main-content">Pular para o conteúdo</a>
@@ -649,13 +708,18 @@ export default function App() {
       <header className="page-header">
         <div><p className="eyebrow">CONTROLE FINANCEIRO</p><h1>{activePage === 'month' ? 'Visão mensal' : activePage === 'year' ? 'Visão anual' : activePage === 'categories' ? 'Categorias' : activePage === 'cards' ? 'Cartões e faturas' : activePage === 'savings' ? 'Cofrinhos' : 'Recorrências'}</h1><p className="page-subtitle">{activePage === 'month' ? 'Acompanhe o que entra, o que sai e o que ainda está pendente.' : activePage === 'year' ? 'Compare suas entradas e despesas mês a mês.' : activePage === 'categories' ? 'Organize seus lançamentos com categorias próprias.' : activePage === 'cards' ? 'Gerencie seus cartões e acompanhe cada fatura.' : activePage === 'savings' ? 'Acompanhe o dinheiro que você separou para guardar.' : 'Automatize o registro mensal das contas e receitas fixas.'}</p></div>
         <div className="header-actions">
-          <button className="icon-button privacy-toggle" type="button" aria-label={hideValues ? 'Mostrar valores' : 'Ocultar valores'} aria-pressed={hideValues} title={hideValues ? 'Mostrar valores' : 'Ocultar valores'} onClick={() => setHideValues((hidden) => !hidden)}>{hideValues ? <Eye size={18}/> : <EyeOff size={18}/>}</button>
-          {activePage === 'year' ? <YearPicker value={selectedYear} onChange={setSelectedYear}/> : <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />}
-          {activePage === 'month' && <><button className="button subtle" onClick={() => { setCsvError(''); setCsvRows([]); setCsvModal(true) }}><FileUp size={16}/> Importar CSV</button><button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button></>}
-          {activePage === 'cards' && <button className="button primary" onClick={openNewCard}><Plus size={17} /> Novo cartão</button>}
-          {activePage === 'savings' && <button className="button primary" onClick={openNewPot}><Plus size={17} /> Novo cofrinho</button>}
-          {activePage === 'recurring' && <button className="button primary" onClick={openNewRecurring}><Plus size={17} /> Nova recorrência</button>}
-          {activePage === 'categories' && <button className="button primary" onClick={() => setCategoryForm({ kind: 'expense', name: '' })}><Plus size={17} /> Nova categoria</button>}
+          <div className="header-utility-actions">
+            <button className="icon-button privacy-toggle" type="button" aria-label={hideValues ? 'Mostrar valores' : 'Ocultar valores'} aria-pressed={hideValues} title={hideValues ? 'Mostrar valores' : 'Ocultar valores'} onClick={() => setHideValues((hidden) => !hidden)}>{hideValues ? <Eye size={18}/> : <EyeOff size={18}/>}</button>
+            <button className="global-search-trigger" type="button" onClick={() => { setGlobalSearchQuery(''); setGlobalSearchOpen(true) }}><Search size={16}/><span>Buscar lançamentos</span><kbd>/</kbd></button>
+          </div>
+          <div className="header-page-actions">
+            {activePage === 'year' ? <YearPicker value={selectedYear} onChange={setSelectedYear}/> : <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />}
+            {activePage === 'month' && <button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button>}
+            {activePage === 'cards' && <button className="button primary" onClick={openNewCard}><Plus size={17} /> Novo cartão</button>}
+            {activePage === 'savings' && <button className="button primary" onClick={openNewPot}><Plus size={17} /> Novo cofrinho</button>}
+            {activePage === 'recurring' && <button className="button primary" onClick={openNewRecurring}><Plus size={17} /> Nova recorrência</button>}
+            {activePage === 'categories' && <button className="button primary" onClick={() => setCategoryForm({ kind: 'expense', name: '' })}><Plus size={17} /> Nova categoria</button>}
+          </div>
         </div>
       </header>
 
@@ -707,14 +771,14 @@ export default function App() {
         <section className="panel entries-panel">
           <PanelHeading title="Lançamentos do mês" subtitle={`${filteredMonthEntries.length} de ${sortedMonthEntries.length} registros em ${monthName(selectedMonth)}`} action={<button className="button subtle" onClick={openNewEntry}><Plus size={15} /> Adicionar</button>} />
           <EntryFilters value={entryFilters} onChange={setEntryFilters} categories={allCategories} />
-          {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} attachments={attachments} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
+          {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} highlightedEntryId={highlightedEntryId} attachments={attachments} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
         </section>
       </> : activePage === 'year' ? <>
         {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
       </> : activePage === 'cards' ? <>
         <section className="card-intro"><div><span className="eyebrow">ACOMPANHAMENTO DO MÊS</span><h2>Faturas de {monthName(selectedMonth)}</h2><p>Veja as compras lançadas em cada cartão e os dias de fechamento e vencimento.</p></div><div className="card-intro-total"><span>Total nas faturas</span><strong>{brl(monthCards.reduce((sum, item) => sum + item.invoiceTotal, 0))}</strong></div></section>
         {cards.length ? <section className="managed-card-grid">{monthCards.map((item, index) => <article className="managed-card" key={item.id}><div className={`bank-card bank-card-${index % 4}`}><div className="bank-card-top"><span>MEU CONTROLE</span><CreditCard size={20} /></div><div className="bank-card-chip" /><b>{item.name}</b><div className="bank-card-footer"><span>FECHAMENTO <strong>{String(item.closing_day).padStart(2, '0')}</strong></span><span>VENCIMENTO <strong>{String(item.due_day).padStart(2, '0')}</strong></span></div></div><div className="managed-card-body"><div><span>Fatura de {monthName(selectedMonth, { month: 'long' })}</span><strong>{brl(item.invoiceTotal)}</strong></div><div className="invoice-status-row">{item.invoiceEntries.length ? <><span className={`status-pill ${item.invoicePaid ? 'settled' : 'pending'}`}>{item.invoicePaid ? 'Fatura paga' : 'Em aberto'}</span>{item.invoicePaidOn && <small>em {fmtDate(item.invoicePaidOn)}</small>}<button className={`button ${item.invoicePaid ? 'subtle' : 'primary'}`} onClick={() => toggleInvoicePaid(item)}>{item.invoicePaid ? 'Reabrir fatura' : 'Marcar fatura paga'}</button></> : <span className="invoice-empty-label">Sem compras neste mês</span>}</div><div className="card-limit-row"><div><span>Limite total</span><strong>{item.credit_limit == null ? '—' : brl(item.credit_limit)}</strong></div><div><span>Disponível agora</span><strong>{item.availableCalculated == null ? '—' : brl(item.availableCalculated)}</strong><small className="limit-explanation">Limite total menos compras pendentes</small></div></div><p>{item.pendingCount} compra{item.pendingCount === 1 ? '' : 's'} ainda pendente{item.pendingCount === 1 ? '' : 's'}</p><div className="card-actions"><button className="button subtle" onClick={() => openEditCard(item)}><Pencil size={14} /> Editar cartão</button><button className="icon-button danger" aria-label={`Excluir cartão ${item.name}`} title="Excluir cartão" onClick={() => deleteCard(item)}><Trash2 size={16} /></button></div></div></article>)}</section> : <section className="panel card-empty"><EmptyState title="Cadastre seu primeiro cartão" text="Depois você poderá acompanhar o total das compras por mês e a data de cada fatura." action={<button className="button primary" onClick={openNewCard}><Plus size={15} /> Cadastrar cartão</button>} /></section>}
-        <section className="panel entries-panel"><PanelHeading title="Compras nos cartões" subtitle={`Lançamentos associados à fatura de ${monthName(selectedMonth)}`} /><EntryTable entries={entries.filter((item) => item.kind === 'expense' && item.card_id && item.invoice_month?.startsWith(selectedMonth)).sort((a, b) => a.spent_on.localeCompare(b.spent_on))} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} attachments={attachments} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} emptyText="Não há compras lançadas para as faturas deste mês." /></section>
+        <section className="panel entries-panel"><PanelHeading title="Compras nos cartões" subtitle={`Lançamentos associados à fatura de ${monthName(selectedMonth)}`} /><EntryTable entries={entries.filter((item) => item.kind === 'expense' && item.card_id && item.invoice_month?.startsWith(selectedMonth)).sort((a, b) => a.spent_on.localeCompare(b.spent_on))} highlightedEntryId={highlightedEntryId} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} attachments={attachments} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} emptyText="Não há compras lançadas para as faturas deste mês." /></section>
       </> : activePage === 'savings' ? <>
         {savingsGoals.length > 0 && <section className="panel goal-summary-panel"><PanelHeading title="Resumo das metas" subtitle={`${savingsGoals.length} cofrinho${savingsGoals.length === 1 ? '' : 's'} com objetivo definido`}/><div className="goal-summary-grid"><div><span>Guardado para as metas</span><strong>{brl(totalGoalSaved)}</strong></div><div><span>Falta para alcançar</span><strong>{brl(totalGoalRemaining)}</strong></div><div><span>Valor total das metas</span><strong>{brl(totalGoalAmount)}</strong></div><div className="goal-summary-progress"><div><span>Progresso geral</span><b>{Math.round(totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}%</b></div><i role="progressbar" aria-label="Progresso geral das metas" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}><span style={{width:`${Math.min(100,totalGoalAmount ? totalGoalSaved / totalGoalAmount * 100 : 0)}%`}}/></i></div></div></section>}
         <section className="savings-hero"><div><span className="hero-kicker">TOTAL GUARDADO</span><strong>{brl(potBalances.reduce((sum, pot) => sum + pot.balance, 0))}</strong><span className="hero-caption">Saldo somado dos seus cofrinhos</span></div><div className="savings-month"><span>Movimentações em {monthName(selectedMonth)}</span><b className="income-text">+ {brl(monthDeposits)} guardados</b><b className="withdrawal-text">− {brl(monthWithdrawals)} retirados</b></div><PiggyBank className="savings-hero-icon" size={35} /></section>
@@ -733,6 +797,7 @@ export default function App() {
     {entryModal && <EntryModal title={editingEntryId ? 'Editar lançamento' : 'Novo lançamento'} value={entryForm} cards={cards} customCategories={userCategories} onChange={setEntryForm} onClose={() => setEntryModal(false)} onSubmit={saveEntry} />}
     {csvModal && <CsvImportModal rows={csvRows} error={csvError} busy={csvBusy} onFile={importCsvFile} onTemplate={downloadCsvTemplate} onImport={importCsvRows} onClose={() => setCsvModal(false)} />}
     {historyModal && <HistoryModal item={historyModal} rows={historyRows} onClose={() => setHistoryModal(null)} />}
+    {globalSearchOpen && <GlobalSearchModal query={globalSearchQuery} onQueryChange={setGlobalSearchQuery} results={globalSearchResults} onSelect={openGlobalSearchResult} onClose={() => setGlobalSearchOpen(false)} />}
     {shareModal && <ShareSettlementModal item={shareModal} onSettle={saveShareSettlement} onClose={() => setShareModal(null)} />}
     {attachmentModal && <AttachmentModal item={attachmentModal.item} files={attachmentModal.files} onOpen={openAttachment} onDelete={deleteAttachment} onClose={() => setAttachmentModal(null)} />}
     {cardModal && <CardModal title={editingCardId ? 'Editar cartão' : 'Cadastrar cartão'} value={cardForm} onChange={setCardForm} onClose={() => setCardModal(false)} onSubmit={saveCard} />}
@@ -767,9 +832,9 @@ function EmptyState({ title, text, action }) {
   return <div className="empty-state"><span className="empty-icon"><Wallet size={19} /></span><b>{title}</b><span>{text}</span>{action}</div>
 }
 
-function EntryTable({ entries, onEdit, onDelete, onSettle, onHistory, onAttachments, onShares, attachments = [], emptyText = 'Não há lançamentos neste mês.' }) {
+function EntryTable({ entries, onEdit, onDelete, onSettle, onHistory, onAttachments, onShares, highlightedEntryId, attachments = [], emptyText = 'Não há lançamentos neste mês.' }) {
   if (!entries.length) return <EmptyState title="Nada para mostrar" text={emptyText} />
-  return <div className="table-wrap"><table className="entry-table"><thead><tr><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Data / vencimento</th><th>Situação</th><th className="align-right">Valor</th><th aria-label="Ações" /></tr></thead><tbody>{entries.map((item) => { const displayDate = item.card_id ? item.spent_on : item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on); return <tr key={item.id}><td><div className="entry-name"><span className={`entry-kind-icon ${item.kind}`} title={item.kind === 'income' ? 'Receita' : 'Despesa'}>{item.kind === 'income' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><b>{item.description}</b><small>{item.installment_number ? `Parcela ${item.installment_number} de ${item.installment_count} · ` : ''}{item.kind === 'income' ? 'Receita' : 'Despesa'}{item.paid_by ? ` · Pago por ${item.paid_by}` : ''}{item.shared_with?.length ? ` · Rateio: ${shareBreakdown(item)}` : ''}{item.notes ? ` · ${item.notes}` : ''}</small></span></div></td><td>{item.category}</td><td>{item.kind === 'income' ? '—' : paymentLabel(item)}</td><td>{fmtDate(displayDate)}</td><td><span className={`status-pill ${item.status}`}>{item.status === 'pending' ? 'Pendente' : item.kind === 'income' ? 'Recebida' : 'Paga'}</span></td><td className={`align-right amount ${item.kind === 'income' ? 'income-text' : ''}`}>{item.kind === 'income' ? '+' : '−'} {brl(item.amount)}</td><td><div className="row-actions">{item.shared_with?.length > 0 && <button className="icon-button" aria-label={`Controlar acertos do rateio de ${item.description}`} title="Acerto do rateio" onClick={() => onShares(item)}><Users size={15}/></button>}{item.status === 'pending' && <button className="icon-button" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} title={item.kind === 'income' ? 'Marcar recebida' : 'Marcar paga'} onClick={() => onSettle(item)}><Check size={15} /></button>}{attachments.some((file) => file.expense_id === item.id) && <button className="icon-button" aria-label={`Abrir comprovantes de ${item.description}`} title="Comprovantes" onClick={() => onAttachments(item)}><Paperclip size={15}/></button>}<button className="icon-button" aria-label={`Ver histórico de ${item.description}`} title="Histórico" onClick={() => onHistory(item)}><History size={15}/></button><button className="icon-button" aria-label={`Editar ${item.description}`} title="Editar" onClick={() => onEdit(item)}><Pencil size={15} /></button><button className="icon-button danger" aria-label={`Excluir ${item.description}`} title="Excluir" onClick={() => onDelete(item)}><Trash2 size={15} /></button></div></td></tr> })}</tbody></table></div>
+  return <div className="table-wrap"><table className="entry-table"><thead><tr><th>Descrição</th><th>Categoria</th><th>Pagamento</th><th>Data / vencimento</th><th>Situação</th><th className="align-right">Valor</th><th aria-label="Ações" /></tr></thead><tbody>{entries.map((item) => { const displayDate = item.card_id ? item.spent_on : item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on); return <tr key={item.id} data-entry-id={item.id} className={highlightedEntryId === item.id ? 'entry-highlighted' : ''}><td><div className="entry-name"><span className={`entry-kind-icon ${item.kind}`} title={item.kind === 'income' ? 'Receita' : 'Despesa'}>{item.kind === 'income' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><b>{item.description}</b><small>{item.installment_number ? `Parcela ${item.installment_number} de ${item.installment_count} · ` : ''}{item.kind === 'income' ? 'Receita' : 'Despesa'}{item.paid_by ? ` · Pago por ${item.paid_by}` : ''}{item.shared_with?.length ? ` · Rateio: ${shareBreakdown(item)}` : ''}{item.notes ? ` · ${item.notes}` : ''}</small></span></div></td><td>{item.category}</td><td>{item.kind === 'income' ? '—' : paymentLabel(item)}</td><td>{fmtDate(displayDate)}</td><td><span className={`status-pill ${item.status}`}>{item.status === 'pending' ? 'Pendente' : item.kind === 'income' ? 'Recebida' : 'Paga'}</span></td><td className={`align-right amount ${item.kind === 'income' ? 'income-text' : ''}`}>{item.kind === 'income' ? '+' : '−'} {brl(item.amount)}</td><td><div className="row-actions">{item.shared_with?.length > 0 && <button className="icon-button" aria-label={`Controlar acertos do rateio de ${item.description}`} title="Acerto do rateio" onClick={() => onShares(item)}><Users size={15}/></button>}{item.status === 'pending' && <button className="icon-button" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} title={item.kind === 'income' ? 'Marcar recebida' : 'Marcar paga'} onClick={() => onSettle(item)}><Check size={15} /></button>}{attachments.some((file) => file.expense_id === item.id) && <button className="icon-button" aria-label={`Abrir comprovantes de ${item.description}`} title="Comprovantes" onClick={() => onAttachments(item)}><Paperclip size={15}/></button>}<button className="icon-button" aria-label={`Ver histórico de ${item.description}`} title="Histórico" onClick={() => onHistory(item)}><History size={15}/></button><button className="icon-button" aria-label={`Editar ${item.description}`} title="Editar" onClick={() => onEdit(item)}><Pencil size={15} /></button><button className="icon-button danger" aria-label={`Excluir ${item.description}`} title="Excluir" onClick={() => onDelete(item)}><Trash2 size={15} /></button></div></td></tr> })}</tbody></table></div>
 }
 
 function EntryModal({ title, value, cards, customCategories = [], onChange, onClose, onSubmit }) {
@@ -845,6 +910,10 @@ function EntryFilters({ value, onChange, categories }) {
   return <div className="entry-filters"><label className="search-field"><Search size={16}/><input aria-label="Buscar por descrição, categoria, forma de pagamento ou valor" placeholder="Buscar lançamento" value={value.search} onChange={(event) => set('search', event.target.value)}/></label><label><SlidersHorizontal size={14}/><select aria-label="Filtrar por tipo" value={value.kind} onChange={(event) => set('kind', event.target.value)}><option value="all">Todos os tipos</option><option value="expense">Despesas</option><option value="income">Receitas</option></select></label><label><select aria-label="Filtrar por situação" value={value.status} onChange={(event) => set('status', event.target.value)}><option value="all">Todas as situações</option><option value="pending">Pendentes</option><option value="settled">Pagas / recebidas</option></select></label><label><select aria-label="Filtrar por categoria" value={value.category} onChange={(event) => set('category', event.target.value)}><option value="all">Todas as categorias</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label><select aria-label="Filtrar por forma de pagamento" value={value.payment} onChange={(event) => set('payment', event.target.value)}><option value="all">Todas as formas</option><option value="pix">Pix</option><option value="cash">Dinheiro</option><option value="debit_card">Débito</option><option value="credit_card">Crédito</option><option value="other">Outro</option></select></label>{active && <button type="button" className="button subtle clear-filters" onClick={() => onChange({search:'',kind:'all',status:'all',category:'all',payment:'all'})}>Limpar filtros</button>}</div>
 }
 
+function GlobalSearchModal({query,onQueryChange,results,onSelect,onClose}) {
+  return <Modal className="global-search-modal" title="Buscar lançamentos" onClose={onClose}><div className="global-search-content"><label className="global-search-input"><Search size={18}/><input autoFocus type="search" value={query} onChange={event=>onQueryChange(event.target.value)} placeholder="Descrição, categoria, cartão, observação…" aria-label="Buscar em todos os lançamentos"/><kbd>ESC</kbd></label>{!query.trim() ? <div className="global-search-empty"><span><Search size={19}/></span><b>Procure em todos os meses</b><small>Busque por descrição, categoria, forma de pagamento, cartão ou observação.</small></div> : results.length ? <><p className="global-search-count">{results.length} resultado{results.length === 1 ? '' : 's'}{results.length > 50 ? ' · mostrando os 50 mais recentes' : ''}</p><div className="global-search-results">{results.slice(0,50).map(item=>{const date=item.status==='pending'?item.due_date:(item.settled_on||item.spent_on);return <button type="button" className="global-search-result" key={item.id} onClick={()=>onSelect(item)}><span className={`entry-kind-icon ${item.kind}`}>{item.kind==='income'?<ArrowDownLeft size={15}/>:<ArrowUpRight size={15}/>}</span><span className="global-search-result-copy"><b>{item.description}</b><small>{item.kind==='income'?'Receita':'Despesa'} · {item.category} · {item.cards?.name || paymentLabel(item)} · {fmtDate(date)}</small></span><span className="global-search-result-value"><strong className={`amount ${item.kind==='income'?'income-text':''}`}>{item.kind==='income'?'+':'−'} {brl(item.amount)}</strong><small className={`status-pill ${item.status}`}>{item.status==='pending'?'Pendente':item.kind==='income'?'Recebida':'Paga'}</small></span></button>})}</div></> : <div className="global-search-empty"><span><Search size={19}/></span><b>Nenhum lançamento encontrado</b><small>Tente outra palavra, categoria ou forma de pagamento.</small></div>}</div></Modal>
+}
+
 function CsvImportModal({ rows, error, busy, onFile, onTemplate, onImport, onClose }) {
   const validCount = rows.filter((row) => !row.error).length
   return <Modal title="Importar lançamentos por CSV" onClose={onClose}><div className="modal-form csv-import-form"><p className="modal-help">Use o modelo para importar despesas e receitas. Datas aceitas: AAAA-MM-DD ou DD/MM/AAAA. Para rateio, separe os nomes com |.</p><button type="button" className="button subtle" onClick={onTemplate}><Download size={15}/> Baixar modelo CSV</button><label>Arquivo CSV<input type="file" accept=".csv,text/csv" onChange={(event) => event.target.files?.[0] && onFile(event.target.files[0])}/></label>{error && <div className="notice" role="alert">{error}</div>}{rows.length > 0 && <><div className="csv-summary">{validCount} linhas válidas · {rows.length-validCount} com erro · máximo de 500 por importação</div><div className="table-wrap csv-preview"><table className="entry-table"><thead><tr><th>Linha</th><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Validação</th></tr></thead><tbody>{rows.slice(0,20).map((row)=><tr key={row.line}><td>{row.line}</td><td>{row.value.kind === 'income' ? 'Receita' : 'Despesa'}</td><td>{row.value.description}</td><td>{brl(row.value.amount)}</td><td className={row.error ? 'withdrawal-text' : 'income-text'}>{row.error || 'Pronta'}</td></tr>)}</tbody></table></div>{rows.length > 20 && <small>Prévia das primeiras 20 linhas; todas as {rows.length} serão validadas.</small>}</>}<div className="modal-actions"><button type="button" className="button subtle" onClick={onClose}>Cancelar</button><button type="button" className="button primary" disabled={busy || validCount === 0} onClick={onImport}><FileUp size={15}/>{busy ? 'Importando…' : `Importar ${validCount || ''} lançamentos`}</button></div></div></Modal>
@@ -885,7 +954,7 @@ function RecurringModal({ title, submitLabel, isEditing, value, cards, customCat
   </form></Modal>
 }
 
-function Modal({ title, onClose, children }) {
+function Modal({ title, onClose, children, className = '' }) {
   const [closing, setClosing] = useState(false)
   const close = () => {
     if (closing) return
@@ -897,14 +966,34 @@ function Modal({ title, onClose, children }) {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   })
-  return <div className={`modal-backdrop ${closing ? 'is-closing' : ''}`} onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}><section className="modal" role="dialog" aria-modal="true" aria-label={title}><div className="modal-heading"><h2>{title}</h2><button className="icon-button" title="Fechar" aria-label="Fechar modal" onClick={close}><X size={18} /></button></div>{children}</section></div>
+  return <div className={`modal-backdrop ${closing ? 'is-closing' : ''}`} onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}><section className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={title}><div className="modal-heading"><h2>{title}</h2><button className="icon-button" title="Fechar" aria-label="Fechar modal" onClick={close}><X size={18} /></button></div>{children}</section></div>
 }
 
-function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, onSubmit, message }) {
-  function switchMode() {
-    setMode(mode === 'login' ? 'signup' : 'login')
+function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, confirmPassword = '', setConfirmPassword, onSubmit, message, onCancelRecovery }) {
+  const isLogin = mode === 'login'
+  const isForgot = mode === 'forgot'
+  const isReset = mode === 'reset'
+  function switchMode() { setMode(isLogin ? 'signup' : 'login') }
+  const heading = isReset ? 'Defina sua nova senha' : isForgot ? 'Recupere seu acesso' : isLogin ? 'Bem-vindo de volta' : 'Crie sua conta'
+  const description = isReset ? 'Escolha uma senha nova para voltar a acessar sua conta.' : isForgot ? 'Informe o e-mail da sua conta e enviaremos um link de redefinição.' : isLogin ? 'Entre para continuar cuidando do seu dinheiro.' : 'Comece a organizar suas contas em poucos passos.'
+  const submitLabel = isReset ? 'Salvar nova senha' : isForgot ? 'Enviar link de recuperação' : isLogin ? 'Entrar na minha conta' : 'Criar minha conta'
+  return <main className="auth-screen"><div className="auth-layout"><aside className="auth-showcase"><div className="auth-showcase-brand"><span className="brand-mark"><Wallet size={21}/></span><span>meu<span className="brand-light">controle</span></span></div><div className="auth-showcase-copy"><span className="auth-kicker"><i/> SUA VIDA FINANCEIRA, MAIS CLARA</span><h2>Seu dinheiro merece<br/>um plano <em>simples.</em></h2><p>Organize contas, acompanhe cartões e veja para onde seu dinheiro está indo, tudo em um só lugar.</p><div className="auth-features"><span><i>✓</i> Visão clara do seu mês</span><span><i>✓</i> Seus dados, só seus</span></div></div><div className="auth-visual" aria-hidden="true"><div className="auth-visual-top"><span><i/><i/><i/></span><small>SEU MÊS EM FOCO</small><CalendarDays size={16}/></div><div className="auth-visual-body"><div className="auth-visual-label"><span>Entradas</span><span>Contas</span><span>Cofrinhos</span></div><div className="auth-chart"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><div className="auth-chart-base"/></div><div className="auth-visual-footer"><span><b/> Planejar fica mais leve</span><ArrowUpRight size={17}/></div></div><small className="auth-showcase-foot">CONTROLE NO SEU RITMO · PRIVACIDADE EM PRIMEIRO LUGAR</small></aside><section className="auth-card"><div className="auth-mode-content" key={mode}><div className="auth-card-top"><span className="auth-card-icon"><Wallet size={19}/></span><span>{isReset ? 'ATUALIZAÇÃO SEGURA' : 'ACESSO SEGURO'}</span></div><p className="eyebrow">SEU ESPAÇO FINANCEIRO</p><h1>{heading}</h1><p className="auth-copy">{description}</p><form onSubmit={onSubmit}>{!isReset && <label>E-mail<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@email.com" /></label>}{!isForgot && <label>{isReset ? 'Nova senha' : 'Senha'}<input type="password" required minLength="6" autoComplete={isLogin ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Mínimo de 6 caracteres" /></label>}{isReset && <label>Confirmar nova senha<input type="password" required minLength="6" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword?.(event.target.value)} placeholder="Digite a nova senha novamente" /></label>}{isLogin && <button className="auth-forgot" type="button" onClick={() => setMode('forgot')}>Esqueci minha senha</button>}{message && <div className="notice" role="status">{message}</div>}<button className="button primary auth-submit">{submitLabel}<ArrowRight size={17}/></button></form>{isReset ? <p className="auth-toggle">Já conseguiu redefinir? <button type="button" onClick={onCancelRecovery}>Voltar ao aplicativo</button></p> : <p className="auth-toggle">{isForgot ? 'Lembrou sua senha?' : isLogin ? 'Ainda não tem conta?' : 'Já tem uma conta?'} <button type="button" onClick={isForgot ? () => setMode('login') : switchMode}>{isForgot ? 'Voltar ao login' : isLogin ? 'Criar conta' : 'Fazer login'}</button></p>}<p className="privacy-note"><span>◈</span> Cada conta acessa somente os próprios dados.</p></div></section></div></main>
+}
+
+function authErrorMessage(error, action) {
+  const raw = error?.message || ''
+  const message = raw.toLowerCase()
+  if (/redirect.*(not allowed|allowlist)|redirect url/.test(message)) return 'O endereço de retorno não está autorizado. No Supabase, adicione o endereço do site em Authentication > URL Configuration > Redirect URLs.'
+  if (action === 'signup' && (error?.code === 'weak_password' || /password.*(weak|short|at least|characters)/.test(message))) {
+    const minimum = raw.match(/(?:at least|minimum of)\s+(\d+)\s+characters/i)
+    return minimum ? `A senha precisa ter pelo menos ${minimum[1]} caracteres, conforme a regra do Supabase.` : `A senha não atende aos requisitos de segurança do Supabase. ${raw}`
   }
-  return <main className="auth-screen"><div className="auth-layout"><aside className="auth-showcase"><div className="auth-showcase-brand"><span className="brand-mark"><Wallet size={21}/></span><span>meu<span className="brand-light">controle</span></span></div><div className="auth-showcase-copy"><span className="auth-kicker"><i/> SUA VIDA FINANCEIRA, MAIS CLARA</span><h2>Seu dinheiro merece<br/>um plano <em>simples.</em></h2><p>Organize contas, acompanhe cartões e veja para onde seu dinheiro está indo, tudo em um só lugar.</p><div className="auth-features"><span><i>✓</i> Visão clara do seu mês</span><span><i>✓</i> Seus dados, só seus</span></div></div><div className="auth-visual" aria-hidden="true"><div className="auth-visual-top"><span><i/><i/><i/></span><small>SEU MÊS EM FOCO</small><CalendarDays size={16}/></div><div className="auth-visual-body"><div className="auth-visual-label"><span>Entradas</span><span>Contas</span><span>Cofrinhos</span></div><div className="auth-chart"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><div className="auth-chart-base"/></div><div className="auth-visual-footer"><span><b/> Planejar fica mais leve</span><ArrowUpRight size={17}/></div></div><small className="auth-showcase-foot">CONTROLE NO SEU RITMO · PRIVACIDADE EM PRIMEIRO LUGAR</small></aside><section className="auth-card"><div className="auth-mode-content" key={mode}><div className="auth-card-top"><span className="auth-card-icon"><Wallet size={19}/></span><span>ACESSO SEGURO</span></div><p className="eyebrow">SEU ESPAÇO FINANCEIRO</p><h1>{mode === 'login' ? 'Bem-vindo de volta' : 'Crie sua conta'}</h1><p className="auth-copy">{mode === 'login' ? 'Entre para continuar cuidando do seu dinheiro.' : 'Comece a organizar suas contas em poucos passos.'}</p><form onSubmit={onSubmit}><label>E-mail<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@email.com" /></label><label>Senha<input type="password" required minLength="6" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Mínimo de 6 caracteres" /></label>{message && <div className="notice">{message}</div>}<button className="button primary auth-submit">{mode === 'login' ? 'Entrar na minha conta' : 'Criar minha conta'}<ArrowRight size={17}/></button></form><p className="auth-toggle">{mode === 'login' ? 'Ainda não tem conta?' : 'Já tem uma conta?'} <button type="button" onClick={switchMode}>{mode === 'login' ? 'Criar conta' : 'Fazer login'}</button></p><p className="privacy-note"><span>◈</span> Cada conta acessa somente os próprios dados.</p></div></section></div></main>
+  if (/invalid login credentials|invalid_credentials/.test(message)) return 'E-mail ou senha incorretos. Confira os dados ou use “Esqueci minha senha”.'
+  if (/email not confirmed/.test(message)) return 'Confirme seu e-mail pelo link enviado antes de entrar.'
+  if (/already registered|user already exists/.test(message)) return 'Já existe uma conta com esse e-mail. Tente entrar ou recuperar a senha.'
+  if (error?.status === 429 || /rate limit|too many requests/.test(message)) return 'Muitas tentativas em pouco tempo. Aguarde um pouco e tente novamente.'
+  if (action === 'recovery') return `Não foi possível enviar o link de recuperação. ${raw}`
+  return raw || 'Não foi possível concluir a solicitação. Tente novamente.'
 }
 
 function SetupScreen() {

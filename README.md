@@ -107,5 +107,10 @@ Depois da migração 009, execute `supabase/migrations/202610160010_custom_split
 
 - **Partes personalizadas:** ao registrar ou editar uma despesa rateada, deixe os valores individuais em branco para dividir igualmente, ou preencha todos. A soma deve corresponder ao total da despesa.
 - **Acertos:** no ícone de pessoas do lançamento, marque cada parte como recebida quando a pessoa devolver o valor. O sistema mostra o que já foi acertado, o total pendente e a data do acerto.
+- **Responsável pela despesa:** o campo Responsável identifica quem ficou responsável pela compra, independentemente de quem pagou ou de como o valor foi dividido. Em compras parceladas, o nome é aplicado a todas as parcelas; ao editar o responsável em qualquer parcela, a série inteira é atualizada.
 - **Busca no histórico:** a visão mensal permite localizar eventos recentes pela descrição ou filtrar por criação, edição, pagamento/recebimento e exclusão (até os 100 eventos mais recentes).
 - **Alertas no app:** a faixa no início da visão mensal mostra contas atrasadas e as que vencem em breve. Em Configurar avisos, selecione antecedência de 1, 2, 3 ou 7 dias. Os avisos aparecem quando você abre o sistema; não enviam e-mail nem notificação fora do navegador.
+
+#### Ativar o campo de responsável (migração 011)
+
+Execute `supabase/migrations/202610160011_expense_responsible_person.sql` no SQL Editor do Supabase depois da migração 010. O campo também fica disponível para busca global e aparece nos detalhes de cada lançamento.

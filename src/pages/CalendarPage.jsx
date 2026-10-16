@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowDownLeft, ArrowUpRight, CalendarDays, Check, ChevronRight, CreditCard } from 'lucide-react'
-import { brl, fmtDate, monthName } from '../lib/finance.js'
+import { ArrowDownLeft, ArrowUpRight, CalendarDays, Check, ChevronRight, CreditCard, Pencil } from 'lucide-react'
+import { brl, fmtDate, monthName, paymentLabel } from '../lib/finance.js'
+import { Modal } from '../components/UI.jsx'
 
 const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb']
 
@@ -8,7 +9,8 @@ function dateKey(year, month, day) {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-export function CalendarPage({ month, events, onOpenEntry, onOpenInvoice, onCreateEntry }) {
+export function CalendarPage({ month, events, onEditEntry, onOpenInvoice, onCreateEntry }) {
+  const [focusedEntry, setFocusedEntry] = useState(null)
   const [year, monthNumber] = month.split('-').map(Number)
   const firstWeekday = new Date(year, monthNumber - 1, 1).getDay()
   const daysInMonth = new Date(year, monthNumber, 0).getDate()
@@ -67,9 +69,26 @@ export function CalendarPage({ month, events, onOpenEntry, onOpenInvoice, onCrea
           <span className="calendar-event-copy"><b>{event.title}</b><small>{event.subtitle}</small></span>
           <strong className={`calendar-event-amount ${event.type === 'income' ? 'income-text' : event.type === 'expense' ? 'withdrawal-text' : ''}`}>{brl(event.amount)}</strong>
           {event.type === 'invoice' ? <span className={`calendar-event-status ${event.paid ? 'paid' : ''}`}>{event.paid ? 'Paga' : 'Em aberto'}</span> : <span className={`calendar-event-status ${event.status === 'settled' ? 'paid' : ''}`}>{event.status === 'settled' ? (event.type === 'income' ? 'Recebida' : 'Paga') : 'Pendente'}</span>}
-          <button type="button" className="calendar-event-open" aria-label={event.type === 'invoice' ? `Ver fatura ${event.title}` : `Abrir lançamento ${event.title}`} title={event.type === 'invoice' ? 'Ver fatura' : 'Abrir lançamento'} onClick={() => event.type === 'invoice' ? onOpenInvoice(event.cardId) : onOpenEntry(event.entry)}><span>{event.type === 'invoice' ? 'Ver fatura' : 'Abrir'}</span><ChevronRight size={15}/></button>
+          <button type="button" className="calendar-event-open" aria-label={event.type === 'invoice' ? `Ver fatura ${event.title}` : `Ver detalhes de ${event.title}`} title={event.type === 'invoice' ? 'Ver fatura' : 'Ver detalhes'} onClick={() => event.type === 'invoice' ? onOpenInvoice(event.cardId) : setFocusedEntry(event.entry)}><span>{event.type === 'invoice' ? 'Ver fatura' : 'Abrir'}</span><ChevronRight size={15}/></button>
         </article>)}</div> : <div className="calendar-day-empty"><span className="calendar-empty-icon"><Check size={18}/></span><b>Nenhum compromisso neste dia</b><small>Suas contas, receitas e faturas aparecerão aqui.</small><button type="button" className="button subtle" onClick={onCreateEntry}>Adicionar lançamento</button></div>}
       </section>
     </div>
+    {focusedEntry && <Modal title="Detalhes do lançamento" onClose={() => setFocusedEntry(null)} className="calendar-entry-details-modal">
+      <div className="calendar-entry-details">
+        <div className={`calendar-entry-details-amount ${focusedEntry.kind}`}><span>{focusedEntry.kind === 'income' ? 'Receita / a receber' : 'Despesa / a pagar'}</span><strong>{focusedEntry.kind === 'income' ? '+' : '−'} {brl(focusedEntry.amount)}</strong></div>
+        <h3>{focusedEntry.description}</h3>
+        <dl>
+          <div><dt>Categoria</dt><dd>{focusedEntry.category}</dd></div>
+          <div><dt>Situação</dt><dd>{focusedEntry.status === 'settled' ? (focusedEntry.kind === 'income' ? 'Recebida' : 'Paga') : 'Pendente'}</dd></div>
+          <div><dt>Data do lançamento</dt><dd>{fmtDate(focusedEntry.spent_on)}</dd></div>
+          <div><dt>{focusedEntry.kind === 'income' ? 'Data prevista' : 'Vencimento'}</dt><dd>{fmtDate(focusedEntry.due_date)}</dd></div>
+          {focusedEntry.status === 'settled' && focusedEntry.settled_on && <div><dt>{focusedEntry.kind === 'income' ? 'Recebida em' : 'Paga em'}</dt><dd>{fmtDate(focusedEntry.settled_on)}</dd></div>}
+          {focusedEntry.kind === 'expense' && <div><dt>Pagamento</dt><dd>{focusedEntry.cards?.name || paymentLabel(focusedEntry)}</dd></div>}
+          {focusedEntry.installment_number && <div><dt>Parcela</dt><dd>{focusedEntry.installment_number} de {focusedEntry.installment_count}</dd></div>}
+        </dl>
+        {focusedEntry.notes && <div className="calendar-entry-details-notes"><b>Observações</b><p>{focusedEntry.notes}</p></div>}
+        <div className="modal-actions"><button type="button" className="button subtle" onClick={() => setFocusedEntry(null)}>Fechar</button><button type="button" className="button primary" onClick={() => { const entry = focusedEntry; setFocusedEntry(null); onEditEntry(entry) }}><Pencil size={14}/> Editar lançamento</button></div>
+      </div>
+    </Modal>}
   </div>
 }

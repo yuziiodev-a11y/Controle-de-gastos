@@ -66,3 +66,45 @@
 .invoice-confirm-content{display:grid;gap:13px}.invoice-confirm-icon{width:45px;height:45px;display:grid;place-items:center;border-radius:13px;background:#f0e9ff;color:#7026d9}.invoice-confirm-icon.reopen{background:#f3f0fa;color:#765d99}.invoice-confirm-content>p{margin:0;color:#5c5369;font-size:13px;line-height:1.6}.invoice-confirm-content>p b{color:#382354}.invoice-confirm-summary{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 13px;border:1px solid #eee8f6;border-radius:10px;background:#fcfaff;color:#756b83;font-size:12px}.invoice-confirm-summary strong{color:#402261;font-size:14px}.invoice-confirm-content>small{color:#81778d;font-size:10px;line-height:1.5}.invoice-confirm-content .modal-actions{margin-top:2px}
 @media(max-width:520px){.invoice-confirm-content .modal-actions{display:grid;grid-template-columns:1fr 1fr}.invoice-confirm-content .modal-actions .button{padding-inline:8px;font-size:11px}}
 .button.confirm-danger{background:#fff0f4;color:#a63158;border:1px solid #f0cbd7;box-shadow:none}.button.confirm-danger:hover{background:#ffe5ed;color:#8d2447}
+
+/* Movimento leve e consistente para navegação, feedback e superfícies interativas. */
+:root{scroll-behavior:smooth;--motion-fast:150ms;--motion-base:220ms;--motion-enter:420ms;--motion-ease:cubic-bezier(.2,.75,.25,1)}
+button,a,input,select,.nav-item,.icon-button,.button,.month-picker>label,.entry-table tbody tr,.summary-card,.managed-card,.savings-pot,.recurring-card,.annual-month,.custom-category-row,.category-track span,.budget-row>i>span,.donut,.compare-bars i,.annual-bars i{transition:color var(--motion-base) var(--motion-ease),background-color var(--motion-base) var(--motion-ease),border-color var(--motion-base) var(--motion-ease),box-shadow var(--motion-base) var(--motion-ease),transform var(--motion-base) var(--motion-ease),opacity var(--motion-base) var(--motion-ease),filter var(--motion-base) var(--motion-ease)}
+button:active:not(:disabled),.annual-month:active{transform:scale(.975)}
+button:disabled{cursor:not-allowed;opacity:.55}
+.nav-item{transition:color var(--motion-base) var(--motion-ease),background-color var(--motion-base) var(--motion-ease),transform var(--motion-base) var(--motion-ease)}
+.nav-item:hover{transform:translateX(2px)}
+.button:hover:not(:disabled){transform:translateY(-1px)}
+.icon-button:hover:not(:disabled){transform:scale(1.06)}
+.summary-card:hover,.managed-card:hover,.savings-pot:hover,.recurring-card:hover{transform:translateY(-3px);box-shadow:0 12px 28px #2f185014}
+.annual-month:hover{transform:translateY(-2px);box-shadow:0 8px 20px #2f185010}
+.entry-table tbody tr{transition:background-color var(--motion-fast) ease,transform var(--motion-fast) ease}
+.entry-table tbody tr:hover{background:#faf8ff}
+.modal-backdrop{animation:overlayIn 190ms ease-out both;backdrop-filter:blur(3px)}
+.modal{transform-origin:center;animation:modalIn 260ms var(--motion-ease) both}
+.modal-backdrop.is-closing{animation:overlayOut 170ms ease-in both}
+.modal-backdrop.is-closing .modal{animation:modalOut 170ms ease-in both}
+.notice{animation:noticeIn 260ms var(--motion-ease) both}
+.main-content>section{animation:contentIn var(--motion-enter) var(--motion-ease) both}
+.main-content>section:nth-of-type(2){animation-delay:35ms}.main-content>section:nth-of-type(3){animation-delay:65ms}.main-content>section:nth-of-type(4){animation-delay:95ms}.main-content>section:nth-of-type(5){animation-delay:125ms}.main-content>section:nth-of-type(6){animation-delay:155ms}
+.summary-card{animation:contentIn 360ms var(--motion-ease) both}.summary-card:nth-child(2){animation-delay:35ms}.summary-card:nth-child(3){animation-delay:70ms}.summary-card:nth-child(4){animation-delay:105ms}.summary-card:nth-child(5){animation-delay:140ms}
+.managed-card,.savings-pot,.recurring-card,.annual-month{animation:contentIn 380ms var(--motion-ease) both}
+.managed-card:nth-child(2),.savings-pot:nth-child(2),.recurring-card:nth-child(2),.annual-month:nth-child(2){animation-delay:45ms}
+.managed-card:nth-child(3),.savings-pot:nth-child(3),.recurring-card:nth-child(3),.annual-month:nth-child(3){animation-delay:90ms}
+.managed-card:nth-child(4),.savings-pot:nth-child(4),.recurring-card:nth-child(4),.annual-month:nth-child(4){animation-delay:135ms}
+.donut{animation:donutIn 600ms var(--motion-ease) both}
+.compare-bars i,.annual-bars i{transform-origin:bottom;animation:barIn 600ms var(--motion-ease) both}
+.category-track span,.budget-row>i>span{transition:width 650ms var(--motion-ease)}
+.status-pill{transition:background-color var(--motion-base) ease,color var(--motion-base) ease;animation:statusIn 260ms var(--motion-ease) both}
+@keyframes contentIn{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:translateY(0)}}
+@keyframes noticeIn{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:translateY(0)}}
+@keyframes overlayIn{from{opacity:0}to{opacity:1}}
+@keyframes overlayOut{from{opacity:1}to{opacity:0}}
+@keyframes modalIn{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes modalOut{from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(7px) scale(.99)}}
+@keyframes donutIn{from{opacity:.35;transform:scale(.94) rotate(-10deg)}to{opacity:1;transform:scale(1) rotate(0)}}
+@keyframes barIn{from{transform:scaleY(.08);opacity:.4}to{transform:scaleY(1);opacity:1}}
+@keyframes statusIn{from{opacity:.55;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+@media(hover:none){.nav-item:hover,.button:hover:not(:disabled),.icon-button:hover:not(:disabled),.summary-card:hover,.managed-card:hover,.savings-pot:hover,.recurring-card:hover,.annual-month:hover{transform:none;box-shadow:inherit}}
+@media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+.modal-backdrop{backdrop-filter:none}.compare-bars i,.annual-bars i{transition:height 650ms var(--motion-ease),transform var(--motion-base) var(--motion-ease),opacity var(--motion-base) var(--motion-ease)}

@@ -290,6 +290,35 @@ export default function App() {
     await loadData()
   }
 
+  async function signOut() {
+    setSession(null)
+    setLoading(false)
+    setPasswordRecovery(false)
+    setMessage('')
+    setProfileModal(false)
+    setEntryModal(false)
+    setCardModal(false)
+    setPotModal(false)
+    setMovementModal(false)
+    setBudgetModal(false)
+    setRecurringModal(false)
+    setEntries([])
+    setCards([])
+    setPots([])
+    setMovements([])
+    setBudgets([])
+    setRecurringRules([])
+    setAttachments([])
+    setRecentHistory([])
+    setUserCategories([])
+    const { error } = await supabase.auth.signOut()
+    if (error) {
+      setMessage(`Não foi possível sair da conta: ${error.message}`)
+      const { data } = await supabase.auth.getSession()
+      if (data.session) setSession(data.session)
+    }
+  }
+
   async function sendPasswordRecovery(event) {
     event.preventDefault(); setMessage('')
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
@@ -774,7 +803,7 @@ export default function App() {
       <button className={`nav-item ${activePage === 'savings' ? 'active' : ''}`} aria-current={activePage === 'savings' ? 'page' : undefined} onClick={() => setActivePage('savings')}><PiggyBank size={17} /> Cofrinhos</button>
       <button className={`nav-item ${activePage === 'recurring' ? 'active' : ''}`} aria-current={activePage === 'recurring' ? 'page' : undefined} onClick={() => setActivePage('recurring')}><Repeat size={17} /> Recorrências</button>
       <div className="sidebar-tip"><div className="tip-icon"><CalendarDays size={17} /></div><b>Seu mês, sob controle</b><span>Planeje o que vai entrar e o que precisa sair.</span></div>
-      <div className="sidebar-user"><span className="user-avatar">{userDisplayName(session.user)[0]?.toUpperCase()}</span><span className="user-email"><b>{userDisplayName(session.user)}</b><small>{session.user.email}</small></span><button className="icon-button" aria-label="Alterar nome de usuário" title="Editar perfil" onClick={() => { setProfileName(session.user.user_metadata?.full_name || session.user.user_metadata?.name || ''); setProfileModal(true) }}><Pencil size={16}/></button><button className="icon-button" aria-label="Sair da conta" title="Sair" onClick={() => supabase.auth.signOut()}><LogOut size={17} /></button></div>
+      <div className="sidebar-user"><span className="user-avatar">{userDisplayName(session.user)[0]?.toUpperCase()}</span><span className="user-email"><b>{userDisplayName(session.user)}</b><small>{session.user.email}</small></span><button className="icon-button" aria-label="Alterar nome de usuário" title="Editar perfil" onClick={() => { setProfileName(session.user.user_metadata?.full_name || session.user.user_metadata?.name || ''); setProfileModal(true) }}><Pencil size={16}/></button><button className="icon-button" aria-label="Sair da conta" title="Sair" onClick={signOut}><LogOut size={17} /></button></div>
     </aside>
 
     <main className="main-content" id="main-content" tabIndex="-1">

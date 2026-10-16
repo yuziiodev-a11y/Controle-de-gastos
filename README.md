@@ -98,3 +98,12 @@ Depois da migração 008, execute `supabase/migrations/202610160009_collaboratio
 - **Reserva de emergência:** em Cofrinhos, use Sugerir meta de emergência. A sugestão considera a média dos últimos três meses nas categorias Moradia, Alimentação, Saúde e Transporte, multiplicada por três. Se ainda não houver histórico, informe a meta manualmente.
 - **Histórico:** cada lançamento mantém eventos de criação, edição, pagamento/recebimento e exclusão. O histórico é preenchido automaticamente pelo banco.
 - **Comprovantes e notas:** anexe PDFs ou imagens JPG, PNG e WebP de até 10 MB cada. Os arquivos ficam privados no Supabase Storage e são abertos por links temporários. Observações e rateio ficam no próprio lançamento.
+
+### Rateio detalhado e alertas no aplicativo (migração 010)
+
+Depois da migração 009, execute `supabase/migrations/202610160010_custom_splits_in_app_reminders.sql` no SQL Editor. Ela preserva os rateios existentes e cria a coluna para salvar as partes e o estado de acerto de cada pessoa.
+
+- **Partes personalizadas:** ao registrar ou editar uma despesa rateada, deixe os valores individuais em branco para dividir igualmente, ou preencha todos. A soma deve corresponder ao total da despesa.
+- **Acertos:** no ícone de pessoas do lançamento, marque cada parte como recebida quando a pessoa devolver o valor. O sistema mostra o que já foi acertado, o total pendente e a data do acerto.
+- **Busca no histórico:** a visão mensal permite localizar eventos recentes pela descrição ou filtrar por criação, edição, pagamento/recebimento e exclusão (até os 100 eventos mais recentes).
+- **Alertas no app:** a faixa no início da visão mensal mostra contas atrasadas e as que vencem em breve. Em Configurar avisos, selecione antecedência de 1, 2, 3 ou 7 dias. Os avisos aparecem quando você abre o sistema; não enviam e-mail nem notificação fora do navegador.

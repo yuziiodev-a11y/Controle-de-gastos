@@ -11,19 +11,71 @@ function parseIsoDate(value: unknown): Date | null {
   return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value ? null : parsed
 }
 
+function formatBcbDate(date: Date): string {
+  return `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`
+}
+
 function getErrorMessage(payload: unknown, fallback: string): string {
   if (payload && typeof payload === 'object') {
     const data = payload as Record<string, unknown>
-    for (const key of ['error', 'message', 'mensagem']) {
+    for (const key of ['error', 'message', 'mensagem', 'detail']) {
       if (typeof data[key] === 'string' && data[key]) return data[key] as string
     }
   }
   return fallback
 }
 
+async function fetchRateChunk(start: Date, end: Date): Promise<Array<{ date: string; value: number }>> {
+  const url = new URL('https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados')
+  url.searchParams.set('formato', 'json')
+  url.searchParams.set('dataInicial', formatBcbDate(start))
+  url.searchParams.set('dataFinal', formatBcbDate(end))
+
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(20_000),
+  })
+  const responseText = await response.text()
+  let payload: unknown
+
+  try {
+    payload = JSON.parse(responseText)
+  } catch {
+    throw new Error(`Banco Central devolveu uma resposta inválida (HTTP ${response.status}).`)
+  }
+
+  if (!response.ok) {
+    throw new Error(getErrorMessage(payload, `Banco Central respondeu com status ${response.status}.`))
+  }
+
+  const rows = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === 'object' && Array.isArray((payload as Record<string, unknown>).data)
+      ? (payload as { data: unknown[] }).data
+      : null
+
+  if (!rows) {
+    throw new Error(getErrorMessage(payload, `Banco Central retornou um formato inesperado: ${JSON.stringify(payload).slice(0, 180)}`))
+  }
+
+  const rates: Array<{ date: string; value: number }> = []
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const data = row as Record<string, unknown>
+    const [day, month, year] = String(data.data ?? '').split('/')
+    const value = Number(data.valor)
+    if (day && month && year && Number.isFinite(value)) {
+      rates.push({ date: `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`, value })
+    }
+  }
+  return rates
+}
+
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
-  if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Método não permitido.' }), { status: 405, headers: corsHeaders })
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Método não permitido.' }), { status: 405, headers: corsHeaders })
+  }
 
   try {
     const body = await request.json()
@@ -33,52 +85,33 @@ Deno.serve(async (request) => {
       return new Response(JSON.stringify({ error: 'Informe um período válido para consultar o CDI.' }), { status: 400, headers: corsHeaders })
     }
 
-    // SGS date range requests can return non-JSON error bodies for large ranges.
-    // Fetch a bounded recent history, then select only the dates this pot needs.
-    const url = new URL('https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados/ultimos/2600')
-    url.searchParams.set('formato', 'json')
-    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
-    const responseText = await response.text()
-    let payload: unknown
-    try {
-      payload = JSON.parse(responseText)
-    } catch {
-      throw new Error(`Banco Central devolveu uma resposta inválida (HTTP ${response.status}).`)
-    }
-    if (!response.ok) {
-      throw new Error(getErrorMessage(payload, `Banco Central respondeu com status ${response.status}.`))
+    // O SGS limita cada consulta a 20 valores. Janelas de 20 dias mantêm
+    // cada resposta abaixo do limite mesmo em períodos sem feriados.
+    const chunks: Array<{ start: Date; end: Date }> = []
+    let chunkStart = start
+    while (chunkStart <= end) {
+      const chunkEnd = new Date(chunkStart)
+      chunkEnd.setUTCDate(chunkEnd.getUTCDate() + 19)
+      if (chunkEnd > end) chunkEnd.setTime(end.getTime())
+      chunks.push({ start: chunkStart, end: chunkEnd })
+      chunkStart = new Date(chunkEnd)
+      chunkStart.setUTCDate(chunkStart.getUTCDate() + 1)
     }
 
-    const rows = Array.isArray(payload)
-      ? payload
-      : payload && typeof payload === 'object' && Array.isArray((payload as Record<string, unknown>).data)
-        ? (payload as { data: unknown[] }).data
-        : null
-    if (!rows) {
-      throw new Error(getErrorMessage(payload, `Banco Central retornou um formato inesperado: ${JSON.stringify(payload).slice(0, 180)}`))
+    const rates: Array<{ date: string; value: number }> = []
+    // Limit concurrency so a long-lived savings pot does not overload the BCB API.
+    for (let index = 0; index < chunks.length; index += 5) {
+      const batch = chunks.slice(index, index + 5)
+      const batchRates = await Promise.all(batch.map(({ start: chunkStartDate, end: chunkEndDate }) => fetchRateChunk(chunkStartDate, chunkEndDate)))
+      rates.push(...batchRates.flat())
     }
 
-    const parsedRates: Array<{ date: string; value: number }> = []
-    for (const row of rows) {
-      if (!row || typeof row !== 'object') continue
-      const data = row as Record<string, unknown>
-      const [day, month, year] = String(data.data ?? '').split('/')
-      const value = Number(data.valor)
-      if (day && month && year && Number.isFinite(value)) {
-        parsedRates.push({ date: `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`, value })
-      }
-    }
-    parsedRates.sort((a, b) => a.date.localeCompare(b.date))
-
-    const startDate = start.toISOString().slice(0, 10)
-    const endDate = end.toISOString().slice(0, 10)
-    const coverageStart = parsedRates[0]?.date ?? null
-    if (coverageStart && startDate < coverageStart) {
-      return new Response(JSON.stringify({ error: `O histórico disponível do CDI começa em ${coverageStart.split('-').reverse().join('/')}. Este cofrinho foi criado antes desse período.` }), { status: 422, headers: corsHeaders })
-    }
-
-    const rates = parsedRates.filter((rate) => rate.date >= startDate && rate.date <= endDate)
-    return new Response(JSON.stringify({ rates, coverageStart, updatedAt: parsedRates.at(-1)?.date ?? null }), { headers: corsHeaders })
+    rates.sort((a, b) => a.date.localeCompare(b.date))
+    return new Response(JSON.stringify({
+      rates,
+      coverageStart: rates[0]?.date ?? start.toISOString().slice(0, 10),
+      updatedAt: rates.at(-1)?.date ?? null,
+    }), { headers: corsHeaders })
   } catch (error) {
     return new Response(JSON.stringify({ error: error instanceof Error ? error.message : 'Não foi possível consultar o CDI.' }), { status: 502, headers: corsHeaders })
   }

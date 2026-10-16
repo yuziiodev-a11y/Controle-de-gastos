@@ -21,7 +21,7 @@ const paymentLabel = (item) => {
 }
 const expenseCategories = ['Alimentação', 'Moradia', 'Transporte', 'Saúde', 'Lazer', 'Compras', 'Serviços', 'Educação', 'Outros']
 const incomeCategories = ['Salário', 'Freelance', 'Investimentos', 'Reembolso', 'Vendas', 'Outros']
-const chartColors = ['#2d7650', '#67a47a', '#b1c98e', '#e4b863', '#e28e69', '#b57ea8', '#7c91c7', '#9da8a0', '#ccd2cb']
+const chartColors = ['#6d28d9', '#8428d8', '#9b36d7', '#5b21b6', '#ad5ce0', '#7336b8', '#bf7ae5', '#8b5ac7', '#d1a6eb']
 const initialEntry = (monthKey = monthOf()) => {
   const date = monthKey === monthOf() ? localDate() : monthStart(monthKey)
   return { kind: 'expense', description: '', amount: '', category: 'Alimentação', spent_on: date, due_date: date, settled_on: '', status: 'pending', payment_method: 'pix', card_id: '', invoice_month: monthKey }

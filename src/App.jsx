@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays,
   Check, ChevronDown, CreditCard, LayoutDashboard, LogOut, Pencil, Plus, PiggyBank,
-  ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff, ChartNoAxesCombined, Tags, Bell, Paperclip, History, Users, BookOpen,
+  ReceiptText, Trash2, Wallet, X, Repeat, Search, SlidersHorizontal, Target, Eye, EyeOff, ChartNoAxesCombined, Tags, Bell, Paperclip, History, Users, BookOpen, MoreHorizontal,
 } from 'lucide-react'
 import { configured, supabase } from './lib/supabase'
 import { brl, localDate, monthOf, monthStart, fmtDate, monthName, normalizeSearchText, userDisplayName, responsibleDetailsFor, responsibleNamesFor, responsibilityAmountsFor, paymentLabel, expenseCategories, incomeCategories, chartColors, cardColors, initialEntry, shareBreakdown, sharesFor, allocateShareAmounts, installmentSchedule, estimateCdiBalance } from './lib/finance.js'
@@ -10,6 +10,7 @@ import { EmptyState, Modal, MonthPicker, PanelHeading, SummaryCard, YearPicker }
 import { AuthScreen, SetupScreen, authErrorMessage } from './components/AuthScreens.jsx'
 import { TutorialPage } from './pages/TutorialPage.jsx'
 import { CalendarPage } from './pages/CalendarPage.jsx'
+import { GettingStarted } from './pages/GettingStarted.jsx'
 import { EntryTable, EntryModal, CardModal, PotModal, CdiStatusPanel, MovementModal, BudgetModal, EntryFilters, GlobalSearchModal, HistoryModal, AttachmentModal, RecurringModal, ProfileModal, ReminderModal, ShareSettlementModal, InvoiceConfirmModal, ConfirmationModal } from './components/FinanceComponents.jsx'
 
 const APP_PAGES = new Set(['month', 'year', 'calendar', 'categories', 'cards', 'responsible', 'savings', 'recurring', 'tutorial'])
@@ -17,6 +18,7 @@ const APP_PAGES = new Set(['month', 'year', 'calendar', 'categories', 'cards', '
 export default function App() {
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [dataLoadedOwner, setDataLoadedOwner] = useState(null)
   const [authMode, setAuthMode] = useState('login')
   const [email, setEmail] = useState('')
   const [username, setUsername] = useState('')
@@ -47,6 +49,7 @@ export default function App() {
   const [movements, setMovements] = useState([])
   const [activePage, setActivePage] = useState('month')
   const [activePageOwner, setActivePageOwner] = useState(null)
+  const [showMoreNav, setShowMoreNav] = useState(false)
   const [selectedMonth, setSelectedMonth] = useState(monthOf())
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()))
   const [cardResponsibleFilter, setCardResponsibleFilter] = useState('all')
@@ -205,6 +208,7 @@ export default function App() {
     ])
     if (cardResult.error || entryResult.error || potResult.error || movementResult.error || budgetResult.error || recurringResult.error || categoryResult.error || reminderResult.error || attachmentResult.error || closureResult.error || historyResult.error) setMessage(cardResult.error?.message || entryResult.error?.message || potResult.error?.message || movementResult.error?.message || budgetResult.error?.message || recurringResult.error?.message || categoryResult.error?.message || reminderResult.error?.message || attachmentResult.error?.message || closureResult.error?.message || historyResult.error?.message || recurrenceError.message)
     else { setCards(cardResult.data || []); setEntries(entryResult.data || []); setPots(potResult.data || []); setMovements(movementResult.data || []); setBudgets(budgetResult.data || []); setRecurringRules(recurringResult.data || []); setUserCategories(categoryResult.data || []); setReminderSettings(reminderResult.data || { enabled: false, days_before: 1 }); setAttachments(attachmentResult.data || []); setMonthClosure(closureResult.data || null); setRecentHistory(historyResult.data || []) }
+    setDataLoadedOwner(session.user.id)
   }
 
   function requestConfirmation({ title, message, details, confirmLabel = 'Excluir', onConfirm }) {
@@ -846,6 +850,10 @@ export default function App() {
     const searchable = [item.description, item.category, paymentLabel(item), item.amount, item.notes, item.paid_by, ...responsibleNamesFor(item, userDisplayName(session.user)), ...(item.shared_with || []), item.cards?.name, item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on), item.invoice_month].map(normalizeSearchText).join(' ')
     return searchable.includes(query)
   }).sort((a, b) => (b.status === 'pending' ? b.due_date : (b.settled_on || b.spent_on)).localeCompare(a.status === 'pending' ? a.due_date : (a.settled_on || a.spent_on))) : []
+  const isNewWorkspace = entries.length === 0 && cards.length === 0 && pots.length === 0 && recurringRules.length === 0
+  const morePages = ['year', 'calendar', 'categories', 'responsible', 'recurring', 'tutorial']
+  const isMorePageActive = morePages.includes(activePage)
+  const navigate = (page) => { setActivePage(page); setShowMoreNav(false) }
 
   function openGlobalSearchResult(item) {
     const relevantDate = item.card_id ? (item.invoice_month || item.spent_on) : (item.status === 'pending' ? item.due_date : (item.settled_on || item.spent_on))
@@ -863,15 +871,20 @@ export default function App() {
     <aside className="sidebar" aria-label="Navegação principal">
       <div className="brand"><span className="brand-mark"><Wallet size={19} /></span><span>meu<span className="brand-light">controle</span></span></div>
       <div className="sidebar-group-label">SEU DINHEIRO</div>
-      <button className={`nav-item ${activePage === 'month' ? 'active' : ''}`} aria-current={activePage === 'month' ? 'page' : undefined} onClick={() => { setMonthTab('overview'); setActivePage('month') }}><LayoutDashboard size={17} /> Visão mensal</button>
-      <button className={`nav-item ${activePage === 'year' ? 'active' : ''}`} aria-current={activePage === 'year' ? 'page' : undefined} onClick={() => setActivePage('year')}><ChartNoAxesCombined size={17} /> Visão anual</button>
-      <button className={`nav-item ${activePage === 'calendar' ? 'active' : ''}`} aria-current={activePage === 'calendar' ? 'page' : undefined} onClick={() => setActivePage('calendar')}><CalendarDays size={17} /> Calendário</button>
-      <button className={`nav-item ${activePage === 'categories' ? 'active' : ''}`} aria-current={activePage === 'categories' ? 'page' : undefined} onClick={() => setActivePage('categories')}><Tags size={17} /> Categorias</button>
-      <button className={`nav-item ${activePage === 'cards' ? 'active' : ''}`} aria-current={activePage === 'cards' ? 'page' : undefined} onClick={() => setActivePage('cards')}><CreditCard size={17} /> Cartões e faturas</button>
-      <button className={`nav-item ${activePage === 'responsible' ? 'active' : ''}`} aria-current={activePage === 'responsible' ? 'page' : undefined} onClick={() => setActivePage('responsible')}><Users size={17} /> Por pessoa</button>
-      <button className={`nav-item ${activePage === 'savings' ? 'active' : ''}`} aria-current={activePage === 'savings' ? 'page' : undefined} onClick={() => setActivePage('savings')}><PiggyBank size={17} /> Cofrinhos</button>
-      <button className={`nav-item ${activePage === 'recurring' ? 'active' : ''}`} aria-current={activePage === 'recurring' ? 'page' : undefined} onClick={() => setActivePage('recurring')}><Repeat size={17} /> Recorrências</button>
-      <button className={`nav-item ${activePage === 'tutorial' ? 'active' : ''}`} aria-current={activePage === 'tutorial' ? 'page' : undefined} onClick={() => setActivePage('tutorial')}><BookOpen size={17} /> Tutorial</button>
+      <button className={`nav-item ${activePage === 'month' ? 'active' : ''}`} aria-current={activePage === 'month' ? 'page' : undefined} onClick={() => { setMonthTab('overview'); navigate('month') }}><LayoutDashboard size={17} /> Visão mensal</button>
+      <button className={`nav-item ${activePage === 'cards' ? 'active' : ''}`} aria-current={activePage === 'cards' ? 'page' : undefined} onClick={() => navigate('cards')}><CreditCard size={17} /> Cartões e faturas</button>
+      <button className={`nav-item ${activePage === 'savings' ? 'active' : ''}`} aria-current={activePage === 'savings' ? 'page' : undefined} onClick={() => navigate('savings')}><PiggyBank size={17} /> Cofrinhos</button>
+      <details className="sidebar-more" open={showMoreNav} onToggle={(event) => setShowMoreNav(event.currentTarget.open)}>
+        <summary className={`nav-item sidebar-more-trigger ${isMorePageActive ? 'active' : ''}`} aria-label="Mais áreas"><MoreHorizontal size={17}/> <span>Mais áreas</span><ChevronDown className="sidebar-more-chevron" size={14}/></summary>
+        <div className="sidebar-more-items">
+          <button className={`nav-item ${activePage === 'year' ? 'active' : ''}`} aria-current={activePage === 'year' ? 'page' : undefined} onClick={() => navigate('year')}><ChartNoAxesCombined size={17} /> Visão anual</button>
+          <button className={`nav-item ${activePage === 'calendar' ? 'active' : ''}`} aria-current={activePage === 'calendar' ? 'page' : undefined} onClick={() => navigate('calendar')}><CalendarDays size={17} /> Calendário</button>
+          <button className={`nav-item ${activePage === 'categories' ? 'active' : ''}`} aria-current={activePage === 'categories' ? 'page' : undefined} onClick={() => navigate('categories')}><Tags size={17} /> Categorias</button>
+          <button className={`nav-item ${activePage === 'responsible' ? 'active' : ''}`} aria-current={activePage === 'responsible' ? 'page' : undefined} onClick={() => navigate('responsible')}><Users size={17} /> Por pessoa</button>
+          <button className={`nav-item ${activePage === 'recurring' ? 'active' : ''}`} aria-current={activePage === 'recurring' ? 'page' : undefined} onClick={() => navigate('recurring')}><Repeat size={17} /> Recorrências</button>
+          <button className={`nav-item ${activePage === 'tutorial' ? 'active' : ''}`} aria-current={activePage === 'tutorial' ? 'page' : undefined} onClick={() => navigate('tutorial')}><BookOpen size={17} /> Tutorial</button>
+        </div>
+      </details>
       <div className="sidebar-tip"><div className="tip-icon"><CalendarDays size={17} /></div><b>Seu mês, sob controle</b><span>Planeje o que vai entrar e o que precisa sair.</span></div>
       <div className="sidebar-user"><span className="user-avatar">{userDisplayName(session.user)[0]?.toUpperCase()}</span><span className="user-email"><b>{userDisplayName(session.user)}</b><small>{session.user.email}</small></span><button className="icon-button" aria-label="Alterar nome de usuário" title="Editar perfil" onClick={() => { setProfileName(session.user.user_metadata?.full_name || session.user.user_metadata?.name || ''); setProfileModal(true) }}><Pencil size={16}/></button><button className="icon-button" aria-label="Sair da conta" title="Sair" onClick={signOut}><LogOut size={17} /></button></div>
     </aside>
@@ -887,7 +900,7 @@ export default function App() {
           </div>
           <div className="header-page-actions">
             {activePage === 'year' ? <YearPicker value={selectedYear} onChange={setSelectedYear}/> : <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />}
-            {(activePage === 'month' || activePage === 'calendar') && <button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button>}
+            {(activePage === 'month' || activePage === 'calendar') && !(activePage === 'month' && isNewWorkspace) && <button className="button primary" onClick={openNewEntry}><Plus size={17} /> Novo lançamento</button>}
             {activePage === 'cards' && <button className="button primary" onClick={openNewCard}><Plus size={17} /> Novo cartão</button>}
             {activePage === 'savings' && <button className="button primary" onClick={openNewPot}><Plus size={17} /> Novo cofrinho</button>}
             {activePage === 'recurring' && <button className="button primary" onClick={openNewRecurring}><Plus size={17} /> Nova recorrência</button>}
@@ -897,8 +910,9 @@ export default function App() {
 
       {message && <div className="notice" role="status" aria-live="polite">{message}<button onClick={() => setMessage('')}><X size={15} /></button></div>}
 
-      {activePage === 'month' ? <>
-        <nav className="month-tabs" role="tablist" aria-label="Seções da visão mensal">{[{ id: 'overview', label: 'Resumo' }, { id: 'entries', label: 'Lançamentos', count: sortedMonthEntries.length }, { id: 'planning', label: 'Planejamento' }, { id: 'history', label: 'Histórico' }].map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={monthTab === tab.id} className={monthTab === tab.id ? 'active' : ''} onClick={() => { setMonthTab(tab.id); window.scrollTo({ top: 0, behavior: 'smooth' }) }}>{tab.label}{tab.count != null && <small>{tab.count}</small>}</button>)}</nav>
+      {dataLoadedOwner !== session.user.id ? <section className="panel workspace-loading" role="status" aria-live="polite"><span className="loading-mark"><Wallet size={18}/></span><b>Preparando seu espaço</b><small>Estamos carregando seus dados.</small></section> : activePage === 'month' ? <>
+        {isNewWorkspace && monthTab === 'overview' ? <GettingStarted onCreateEntry={openNewEntry} onCreateCard={openNewCard} onCreatePot={openNewPot} onCreateRecurring={openNewRecurring} onOpenTutorial={() => navigate('tutorial')} /> : <>
+        <nav className="month-tabs" role="tablist" aria-label="Seções da visão mensal">{[{ id: 'overview', label: 'Resumo' }, { id: 'entries', label: 'Lançamentos', count: sortedMonthEntries.length }, { id: 'analysis', label: 'Análises' }, { id: 'planning', label: 'Planejamento' }, { id: 'history', label: 'Histórico' }].map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={monthTab === tab.id} className={monthTab === tab.id ? 'active' : ''} onClick={() => { setMonthTab(tab.id); window.scrollTo({ top: 0, behavior: 'smooth' }) }}>{tab.label}{tab.count != null && <small>{tab.count}</small>}</button>)}</nav>
         {monthTab === 'overview' && <div className="month-tab-view" role="tabpanel" aria-label="Resumo mensal">
         <section className="panel reminder-strip" aria-labelledby="due-alert-title"><div><Bell size={18}/><span><b id="due-alert-title">Alertas de vencimento</b><small>{overdueEntries.length ? `${overdueEntries.length} conta${overdueEntries.length === 1 ? '' : 's'} atrasada${overdueEntries.length === 1 ? '' : 's'}. ` : ''}{dueInSevenDays.length ? `${dueInSevenDays.length} vencem nos próximos ${reminderDays} dias.` : `Nenhuma conta vence nos próximos ${reminderDays} dias.`} Os avisos aparecem aqui quando você abre o sistema.</small></span></div><button className="button subtle" onClick={()=>setReminderModal(true)}>{reminderSettings.enabled?'Configurar':'Configurar avisos'}</button>{(overdueEntries.length || dueInSevenDays.length) ? <div className="due-alert-list">{[...overdueEntries, ...dueInSevenDays].slice(0,4).map(item=><div className="due-alert-item" key={item.id}><span className={item.due_date < todayKey ? 'overdue-label' : ''}>{item.due_date < todayKey ? 'Atrasada' : `Vence ${fmtDate(item.due_date)}`}</span><b>{item.description}</b><strong>{brl(item.amount)}</strong><button className="button subtle" aria-label={item.kind === 'income' ? `Marcar ${item.description} como recebida` : `Marcar ${item.description} como paga`} onClick={()=>settleEntry(item)}>{item.kind === 'income' ? 'Recebi' : 'Paguei'}</button></div>)}</div> : null}</section>
         <section className="month-hero">
@@ -924,7 +938,7 @@ export default function App() {
         </section>
         </div>}
 
-        {monthTab === 'overview' && <div className="month-tab-view" role="tabpanel" aria-label="Resumo mensal: fluxo de caixa">
+        {monthTab === 'analysis' && <div className="month-tab-view" role="tabpanel" aria-label="Análises do mês: fluxo de caixa e categorias">
         <section className="panel cashflow-panel" aria-label="Fluxo de caixa do mês">
           <PanelHeading title="Fluxo de caixa do mês" subtitle="Variação acumulada das entradas e saídas registradas, por data." action={<span className="count-pill">{cashflowRows.length} dias com lançamentos</span>} />
           {cashflowRows.length ? <div className="cashflow-table-wrap"><table className="cashflow-table"><thead><tr><th scope="col">Data</th><th scope="col">Entradas</th><th scope="col">Saídas</th><th scope="col">Variação do dia</th><th scope="col">Acumulado no mês</th><th scope="col">Lançamentos</th></tr></thead><tbody>{cashflowRows.map(row=><tr key={row.date}><th scope="row">{fmtDate(row.date)}</th><td className="income-text">{row.income ? `+ ${brl(row.income)}` : '—'}</td><td>{row.expenses ? `− ${brl(row.expenses)}` : '—'}</td><td className={row.net >= 0 ? 'income-text' : 'withdrawal-text'}>{row.net >= 0 ? '+' : '−'} {brl(Math.abs(row.net))}</td><td className={row.running >= 0 ? 'income-text' : 'withdrawal-text'}>{brl(row.running)}</td><td><button type="button" className="cashflow-open-day" onClick={() => { setCashflowDayDate(row.date); setCashflowConfirmAll(false) }}><ReceiptText size={14}/><span>Ver lançamentos</span><small>{row.entries.length}</small></button></td></tr>)}</tbody></table></div> : <EmptyState title="Sem movimentações previstas" text="Adicione contas ou receitas para acompanhar a evolução do saldo neste mês." action={<button className="button subtle" onClick={openNewEntry}><Plus size={15}/> Registrar lançamento</button>} />}
@@ -958,6 +972,7 @@ export default function App() {
           {filteredMonthEntries.length ? <EntryTable entries={filteredMonthEntries} highlightedEntryId={highlightedEntryId} attachments={attachments} defaultResponsible={userDisplayName(session.user)} onEdit={openEditEntry} onDelete={deleteEntry} onSettle={settleEntry} onHistory={openHistory} onShares={(item) => setShareModal({ ...item, share_details: sharesFor(item) })} onAttachments={(item) => setAttachmentModal({ item, files: attachments.filter((file) => file.expense_id === item.id) })} /> : <EmptyState title={sortedMonthEntries.length ? 'Nenhum resultado para estes filtros' : 'Este mês ainda está vazio'} text={sortedMonthEntries.length ? 'Tente mudar a busca ou os filtros.' : 'Adicione suas contas a pagar, valores a receber ou gastos do dia a dia.'} action={!sortedMonthEntries.length && <button className="button primary" onClick={openNewEntry}><Plus size={15} /> Criar lançamento</button>} />}
         </section>
         </div>}
+        </>}
       </> : activePage === 'calendar' ? <CalendarPage month={selectedMonth} events={calendarEvents} onEditEntry={openEditEntry} onOpenInvoice={(cardId) => { setInvoiceCardFilter(cardId); setInvoiceStatusFilter('all'); setActivePage('cards') }} onCreateEntry={openNewEntry} /> : activePage === 'tutorial' ? <TutorialPage onNavigate={(page, tab) => { if (tab) setMonthTab(tab); setActivePage(page); window.scrollTo({ top: 0, behavior: 'smooth' }) }} /> : activePage === 'year' ? <>
         {(() => { const rows = Array.from({length:12},(_,i)=>{const key=`${selectedYear}-${String(i+1).padStart(2,'0')}`;const list=entries.filter(item=>(item.status==='pending'?item.due_date:(item.settled_on||item.spent_on))?.startsWith(key));return {key,income:list.filter(x=>x.kind==='income').reduce((a,x)=>a+Number(x.amount),0),expense:list.filter(x=>x.kind==='expense').reduce((a,x)=>a+Number(x.amount),0)}});const max=Math.max(...rows.flatMap(x=>[x.income,x.expense]),1);return <><section className="stats-grid"><SummaryCard label="Entradas no ano" value={brl(rows.reduce((a,x)=>a+x.income,0))} detail={`Receitas registradas em ${selectedYear}`} icon={<ArrowDownLeft size={17}/>} tone="purple"/><SummaryCard label="Despesas no ano" value={brl(rows.reduce((a,x)=>a+x.expense,0))} detail={`Despesas registradas em ${selectedYear}`} icon={<ArrowUpRight size={17}/>} tone="blue"/><SummaryCard label="Resultado anual" value={brl(rows.reduce((a,x)=>a+x.income-x.expense,0))} detail="Entradas menos despesas" icon={<Wallet size={17}/>} tone="green"/></section><section className="panel annual-panel"><PanelHeading title={`Resumo de ${selectedYear}`} subtitle="Selecione um mês para abrir seus detalhes e lançamentos."/><div className="annual-grid">{rows.map(row=><button className="annual-month" key={row.key} onClick={()=>{setSelectedMonth(row.key);setMonthTab('overview');setActivePage('month')}}><b>{monthName(row.key,{month:'long'})}</b><div className="annual-bars"><i className="income-bar" style={{height:`${Math.max(row.income?4:0,row.income/max*100)}%`}}/><i className="expense-bar" style={{height:`${Math.max(row.expense?4:0,row.expense/max*100)}%`}}/></div><span>Entradas {brl(row.income)}</span><span>Despesas {brl(row.expense)}</span><strong>{brl(row.income-row.expense)}</strong></button>)}</div></section></>})()}
       </> : activePage === 'responsible' ? <>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays,
   Check, ChevronDown, CreditCard, LayoutDashboard, LogOut, Pencil, Plus, PiggyBank,
@@ -21,6 +21,9 @@ export default function App() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordRecovery, setPasswordRecovery] = useState(false)
   const [message, setMessage] = useState('')
+  const [authSubmitting, setAuthSubmitting] = useState(false)
+  const [authConfirmationSent, setAuthConfirmationSent] = useState(false)
+  const authSubmissionRef = useRef(false)
   const [profileModal, setProfileModal] = useState(false)
   const [profileName, setProfileName] = useState('')
   const [entries, setEntries] = useState([])
@@ -190,13 +193,70 @@ export default function App() {
   }
 
   async function handleAuth(event) {
-    event.preventDefault(); setMessage('')
-    if (authMode === 'signup' && username.trim().length < 2) { setMessage('O nome de usuário precisa ter pelo menos 2 caracteres.'); return }
-    const result = authMode === 'login'
-      ? await supabase.auth.signInWithPassword({ email, password })
-      : await supabase.auth.signUp({ email, password, options: { data: { full_name: username.trim() } } })
-    if (result.error) setMessage(authErrorMessage(result.error, authMode))
-    else if (authMode === 'signup' && !result.data.session) setMessage('Cadastro feito. Confirme seu e-mail para entrar.')
+    event.preventDefault()
+    if (authMode === 'signup' && username.trim().length < 2) {
+      setMessage('O nome de usuário precisa ter pelo menos 2 caracteres.')
+      return
+    }
+    if (authSubmissionRef.current) return
+    authSubmissionRef.current = true
+    setAuthSubmitting(true)
+    setMessage(authMode === 'signup' ? 'Criando sua conta…' : 'Entrando…')
+    try {
+      const result = authMode === 'login'
+        ? await supabase.auth.signInWithPassword({ email, password })
+        : await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { full_name: username.trim() },
+            emailRedirectTo: new URL('/', window.location.origin).toString(),
+          },
+        })
+      if (result.error) {
+        setMessage(authErrorMessage(result.error, authMode))
+      } else if (authMode === 'signup' && !result.data.session) {
+        if (result.data.user?.identities?.length === 0) {
+          setMessage('Esse e-mail já possui uma conta. Faça login ou use “Esqueci minha senha” para recuperar o acesso.')
+        } else {
+          setAuthConfirmationSent(true)
+          setMessage('')
+          setPassword('')
+        }
+      } else if (authMode === 'signup') {
+        setSession(result.data.session)
+        setMessage('')
+      } else {
+        setMessage('')
+      }
+    } catch (error) {
+      setMessage(authErrorMessage(error, authMode))
+    } finally {
+      authSubmissionRef.current = false
+      setAuthSubmitting(false)
+    }
+  }
+
+  async function resendSignupConfirmation() {
+    if (authSubmissionRef.current) return
+    authSubmissionRef.current = true
+    setAuthSubmitting(true)
+    setMessage('Reenviando o e-mail de confirmação…')
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: email.trim(),
+        options: { emailRedirectTo: new URL('/', window.location.origin).toString() },
+      })
+      setMessage(error
+        ? authErrorMessage(error, 'signup')
+        : 'Solicitação enviada. Confira sua caixa de entrada e a pasta de spam.')
+    } catch (error) {
+      setMessage(authErrorMessage(error, 'signup'))
+    } finally {
+      authSubmissionRef.current = false
+      setAuthSubmitting(false)
+    }
   }
 
   async function saveProfileName(event) {
@@ -744,7 +804,7 @@ export default function App() {
   if (loading) return <main className="center-screen">Carregando…</main>
   if (!configured) return <SetupScreen />
   if (passwordRecovery && session) return <AuthScreen mode="reset" setMode={setAuthMode} email={email} setEmail={setEmail} username={username} setUsername={setUsername} password={password} setPassword={setPassword} confirmPassword={confirmPassword} setConfirmPassword={setConfirmPassword} onSubmit={updateRecoveredPassword} message={message} onCancelRecovery={() => { setPasswordRecovery(false); setMessage('') }} />
-  if (!session) return <AuthScreen mode={authMode} setMode={(nextMode) => { setAuthMode(nextMode); setMessage(''); setPassword('') }} email={email} setEmail={setEmail} username={username} setUsername={setUsername} password={password} setPassword={setPassword} onSubmit={authMode === 'forgot' ? sendPasswordRecovery : handleAuth} message={message} />
+  if (!session) return <AuthScreen mode={authMode} setMode={(nextMode) => { setAuthMode(nextMode); setAuthConfirmationSent(false); setMessage(''); setPassword('') }} email={email} setEmail={setEmail} username={username} setUsername={setUsername} password={password} setPassword={setPassword} onSubmit={authMode === 'forgot' ? sendPasswordRecovery : handleAuth} message={message} submitting={authSubmitting} confirmationSent={authConfirmationSent} onResendConfirmation={resendSignupConfirmation} onBackToLogin={() => { setAuthConfirmationSent(false); setAuthMode('login'); setMessage('') }} />
 
   return <div className={`app-shell ${hideValues ? 'values-hidden' : ''}`}>
     <a className="skip-link" href="#main-content">Pular para o conteúdo</a>

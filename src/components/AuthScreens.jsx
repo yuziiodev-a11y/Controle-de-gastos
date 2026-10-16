@@ -1,6 +1,24 @@
-import { ArrowRight, ArrowUpRight, CalendarDays, Wallet } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, CalendarDays, CheckCircle2, Wallet } from 'lucide-react'
 
-export function AuthScreen({ mode, setMode, email, setEmail, username = '', setUsername, password, setPassword, confirmPassword = '', setConfirmPassword, onSubmit, message, onCancelRecovery }) {
+export function AuthScreen({
+  mode,
+  setMode,
+  email,
+  setEmail,
+  username = '',
+  setUsername,
+  password,
+  setPassword,
+  confirmPassword = '',
+  setConfirmPassword,
+  onSubmit,
+  message,
+  onCancelRecovery,
+  onBackToLogin,
+  onResendConfirmation,
+  submitting = false,
+  confirmationSent = false,
+}) {
   const isLogin = mode === 'login'
   const isForgot = mode === 'forgot'
   const isReset = mode === 'reset'
@@ -8,7 +26,41 @@ export function AuthScreen({ mode, setMode, email, setEmail, username = '', setU
   const heading = isReset ? 'Defina sua nova senha' : isForgot ? 'Recupere seu acesso' : isLogin ? 'Bem-vindo de volta' : 'Crie sua conta'
   const description = isReset ? 'Escolha uma senha nova para voltar a acessar sua conta.' : isForgot ? 'Informe o e-mail da sua conta e enviaremos um link de redefinição.' : isLogin ? 'Entre para continuar cuidando do seu dinheiro.' : 'Comece a organizar suas contas em poucos passos.'
   const submitLabel = isReset ? 'Salvar nova senha' : isForgot ? 'Enviar link de recuperação' : isLogin ? 'Entrar na minha conta' : 'Criar minha conta'
-  return <main className="auth-screen"><div className="auth-layout"><aside className="auth-showcase"><div className="auth-showcase-brand"><span className="brand-mark"><Wallet size={21}/></span><span>meu<span className="brand-light">controle</span></span></div><div className="auth-showcase-copy"><span className="auth-kicker"><i/> SUA VIDA FINANCEIRA, MAIS CLARA</span><h2>Seu dinheiro merece<br/>um plano <em>simples.</em></h2><p>Organize contas, acompanhe cartões e veja para onde seu dinheiro está indo, tudo em um só lugar.</p><div className="auth-features"><span><i>✓</i> Visão clara do seu mês</span><span><i>✓</i> Seus dados, só seus</span></div></div><div className="auth-visual" aria-hidden="true"><div className="auth-visual-top"><span><i/><i/><i/></span><small>SEU MÊS EM FOCO</small><CalendarDays size={16}/></div><div className="auth-visual-body"><div className="auth-visual-label"><span>Entradas</span><span>Contas</span><span>Cofrinhos</span></div><div className="auth-chart"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><div className="auth-chart-base"/></div><div className="auth-visual-footer"><span><b/> Planejar fica mais leve</span><ArrowUpRight size={17}/></div></div><small className="auth-showcase-foot">CONTROLE NO SEU RITMO · PRIVACIDADE EM PRIMEIRO LUGAR</small></aside><section className="auth-card"><div className="auth-mode-content" key={mode}><div className="auth-card-top"><span className="auth-card-icon"><Wallet size={19}/></span><span>{isReset ? 'ATUALIZAÇÃO SEGURA' : 'ACESSO SEGURO'}</span></div><p className="eyebrow">SEU ESPAÇO FINANCEIRO</p><h1>{heading}</h1><p className="auth-copy">{description}</p><form onSubmit={onSubmit}>{!isReset && <label>E-mail<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@email.com" /></label>}{mode === 'signup' && <label>Nome de usuário<input type="text" required minLength="2" maxLength="40" autoComplete="nickname" value={username} onChange={(event) => setUsername?.(event.target.value)} placeholder="Como devemos chamar você?" /></label>}{!isForgot && <label>{isReset ? 'Nova senha' : 'Senha'}<input type="password" required minLength="6" autoComplete={isLogin ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Mínimo de 6 caracteres" /></label>}{isReset && <label>Confirmar nova senha<input type="password" required minLength="6" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword?.(event.target.value)} placeholder="Digite a nova senha novamente" /></label>}{isLogin && <button className="auth-forgot" type="button" onClick={() => setMode('forgot')}>Esqueci minha senha</button>}{message && <div className="notice" role="status">{message}</div>}<button className="button primary auth-submit">{submitLabel}<ArrowRight size={17}/></button></form>{isReset ? <p className="auth-toggle">Já conseguiu redefinir? <button type="button" onClick={onCancelRecovery}>Voltar ao aplicativo</button></p> : <p className="auth-toggle">{isForgot ? 'Lembrou sua senha?' : isLogin ? 'Ainda não tem conta?' : 'Já tem uma conta?'} <button type="button" onClick={isForgot ? () => setMode('login') : switchMode}>{isForgot ? 'Voltar ao login' : isLogin ? 'Criar conta' : 'Fazer login'}</button></p>}<p className="privacy-note"><span>◈</span> Cada conta acessa somente os próprios dados.</p></div></section></div></main>
+
+  return <main className="auth-screen"><div className="auth-layout">
+    <aside className="auth-showcase">
+      <div className="auth-showcase-brand"><span className="brand-mark"><Wallet size={21}/></span><span>meu<span className="brand-light">controle</span></span></div>
+      <div className="auth-showcase-copy"><span className="auth-kicker"><i/> SUA VIDA FINANCEIRA, MAIS CLARA</span><h2>Seu dinheiro merece<br/>um plano <em>simples.</em></h2><p>Organize contas, acompanhe cartões e veja para onde seu dinheiro está indo, tudo em um só lugar.</p><div className="auth-features"><span><i>✓</i> Visão clara do seu mês</span><span><i>✓</i> Seus dados, só seus</span></div></div>
+      <div className="auth-visual" aria-hidden="true"><div className="auth-visual-top"><span><i/><i/><i/></span><small>SEU MÊS EM FOCO</small><CalendarDays size={16}/></div><div className="auth-visual-body"><div className="auth-visual-label"><span>Entradas</span><span>Contas</span><span>Cofrinhos</span></div><div className="auth-chart"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><div className="auth-chart-base"/></div><div className="auth-visual-footer"><span><b/> Planejar fica mais leve</span><ArrowUpRight size={17}/></div></div>
+      <small className="auth-showcase-foot">CONTROLE NO SEU RITMO · PRIVACIDADE EM PRIMEIRO LUGAR</small>
+    </aside>
+    <section className="auth-card"><div className="auth-mode-content" key={mode}>
+      <div className="auth-card-top"><span className="auth-card-icon"><Wallet size={19}/></span><span>{isReset ? 'ATUALIZAÇÃO SEGURA' : 'ACESSO SEGURO'}</span></div>
+      <p className="eyebrow">SEU ESPAÇO FINANCEIRO</p><h1>{confirmationSent ? 'Conta criada!' : heading}</h1>
+      <p className="auth-copy">{confirmationSent ? 'Só falta confirmar seu e-mail para ativar o acesso.' : description}</p>
+
+      {confirmationSent ? <div className="auth-confirmation-panel" role="status">
+        <span className="auth-confirmation-icon"><CheckCircle2 size={22}/></span>
+        <b>Cadastro realizado com sucesso</b>
+        <p>Enviamos um link de confirmação para <strong>{email}</strong>. Abra o e-mail e clique no link para confirmar sua conta. Depois, você voltará ao Meu Controle.</p>
+        <small>Se não encontrar a mensagem, verifique também a pasta de spam.</small>
+        {message && <div className="notice" role="status">{message}</div>}
+        <button type="button" className="auth-resend-link" onClick={onResendConfirmation} disabled={submitting}>{submitting ? 'Reenviando…' : 'Não recebeu? Reenviar confirmação'}</button>
+        <button type="button" className="button primary auth-submit" onClick={onBackToLogin}>Voltar para entrar<ArrowRight size={17}/></button>
+      </div> : <form onSubmit={onSubmit}>
+        {!isReset && <label>E-mail<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@email.com" disabled={submitting}/></label>}
+        {mode === 'signup' && <label>Nome de usuário<input type="text" required minLength="2" maxLength="40" autoComplete="nickname" value={username} onChange={(event) => setUsername?.(event.target.value)} placeholder="Como devemos chamar você?" disabled={submitting}/></label>}
+        {!isForgot && <label>{isReset ? 'Nova senha' : 'Senha'}<input type="password" required minLength="6" autoComplete={isLogin ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Mínimo de 6 caracteres" disabled={submitting}/></label>}
+        {isReset && <label>Confirmar nova senha<input type="password" required minLength="6" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword?.(event.target.value)} placeholder="Digite a nova senha novamente" disabled={submitting}/></label>}
+        {isLogin && <button className="auth-forgot" type="button" onClick={() => setMode('forgot')} disabled={submitting}>Esqueci minha senha</button>}
+        {message && <div className={`notice ${submitting ? 'notice-pending' : ''}`} role="status">{message}</div>}
+        <button className="button primary auth-submit" disabled={submitting}>{submitting ? (isLogin ? 'Entrando…' : 'Criando sua conta…') : submitLabel}{!submitting && <ArrowRight size={17}/>}</button>
+      </form>}
+
+      {confirmationSent ? null : isReset ? <p className="auth-toggle">Já conseguiu redefinir? <button type="button" onClick={onCancelRecovery} disabled={submitting}>Voltar ao aplicativo</button></p> : <p className="auth-toggle">{isForgot ? 'Lembrou sua senha?' : isLogin ? 'Ainda não tem conta?' : 'Já tem uma conta?'} <button type="button" onClick={isForgot ? () => setMode('login') : switchMode} disabled={submitting}>{isForgot ? 'Voltar ao login' : isLogin ? 'Criar conta' : 'Fazer login'}</button></p>}
+      <p className="privacy-note"><span>◈</span> Cada conta acessa somente os próprios dados.</p>
+    </div></section>
+  </div></main>
 }
 
 export function authErrorMessage(error, action) {
@@ -22,7 +74,8 @@ export function authErrorMessage(error, action) {
   if (/invalid login credentials|invalid_credentials/.test(message)) return 'E-mail ou senha incorretos. Confira os dados ou use “Esqueci minha senha”.'
   if (/email not confirmed/.test(message)) return 'Confirme seu e-mail pelo link enviado antes de entrar.'
   if (/already registered|user already exists/.test(message)) return 'Já existe uma conta com esse e-mail. Tente entrar ou recuperar a senha.'
-  if (error?.status === 429 || /rate limit|too many requests/.test(message)) return 'Muitas tentativas em pouco tempo. Aguarde um pouco e tente novamente.'
+  if (/email.*rate.?limit|over_email_send_rate_limit/.test(message)) return 'O Supabase limitou o envio de e-mails. O serviço padrão permite apenas 2 por hora; aguarde o limite liberar ou configure um SMTP próprio em Authentication > Emails > SMTP Settings. Evite tentar novamente várias vezes.'
+  if (error?.status === 429 || /rate limit|too many requests/.test(message)) return 'O Supabase bloqueou temporariamente novas tentativas. Aguarde alguns minutos antes de tentar de novo e evite repetir o cadastro.'
   if (action === 'recovery') return `Não foi possível enviar o link de recuperação. ${raw}`
   return raw || 'Não foi possível concluir a solicitação. Tente novamente.'
 }
